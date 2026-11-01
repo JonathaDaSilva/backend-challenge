@@ -1,4 +1,6 @@
 import type { Money } from '../../../shared/domain/money';
+import { LedgerDirection } from '../../wallet/domain/wallet-ledger-entry';
+import { InvalidTransactionStateError, InvalidWagerTransactionError } from './errors';
 
 export enum WagerTransactionKind {
   Opening = 'OPENING',
@@ -16,6 +18,14 @@ export enum WagerTransactionStatus {
   Rejected = 'REJECTED',
   Failed = 'FAILED',
 }
+
+const TERMINAL_STATUSES = new Set([
+  WagerTransactionStatus.Processed,
+  WagerTransactionStatus.Rejected,
+  WagerTransactionStatus.Failed,
+]);
+
+const REVERSAL_KINDS = new Set([WagerTransactionKind.Refund, WagerTransactionKind.Rollback]);
 
 export interface WagerTransactionState {
   readonly id: string;
@@ -36,6 +46,22 @@ export interface WagerTransactionState {
   readonly failureCode: string | undefined;
   readonly processedAt: Date | undefined;
   readonly resultBalance: Money | undefined;
+}
+
+export interface CreateWagerTransactionProps {
+  readonly id: string;
+  readonly providerId: string;
+  readonly externalTransactionId: string;
+  readonly idempotencyKey: string;
+  readonly payloadHash: string;
+  readonly walletId: string;
+  readonly playerId: string;
+  readonly roundId: string;
+  readonly gameId: string;
+  readonly kind: WagerTransactionKind;
+  readonly money: Money;
+  readonly referenceExternalTransactionId: string | undefined;
+  readonly at: Date;
 }
 
 export interface OpeningProps {
@@ -67,6 +93,46 @@ export class WagerTransaction {
     private _processedAt: Date | undefined,
     private _resultBalance: Money | undefined,
   ) {}
+
+  static create(props: CreateWagerTransactionProps): WagerTransaction {
+    if (props.kind === WagerTransactionKind.Opening) {
+      throw new InvalidWagerTransactionError('OPENING_NOT_ALLOWED', 'OPENING is internal and cannot be submitted');
+    }
+    const isReversal = REVERSAL_KINDS.has(props.kind);
+    if (isReversal && props.referenceExternalTransactionId === undefined) {
+      throw new InvalidWagerTransactionError('REFERENCE_REQUIRED', `${props.kind} requires a reference`);
+    }
+    if (!isReversal && props.referenceExternalTransactionId !== undefined) {
+      throw new InvalidWagerTransactionError('REFERENCE_NOT_ALLOWED', `${props.kind} cannot carry a reference`);
+    }
+    if (props.money.isNegative()) {
+      throw new InvalidWagerTransactionError('NEGATIVE_AMOUNT', 'Amount must not be negative');
+    }
+    if (props.kind !== WagerTransactionKind.Loss && !props.money.isPositive()) {
+      throw new InvalidWagerTransactionError('AMOUNT_MUST_BE_POSITIVE', `${props.kind} amount must be positive`);
+    }
+
+    return new WagerTransaction(
+      props.id,
+      props.providerId,
+      props.externalTransactionId,
+      props.idempotencyKey,
+      props.payloadHash,
+      props.walletId,
+      props.playerId,
+      props.roundId,
+      props.gameId,
+      props.kind,
+      props.money,
+      props.referenceExternalTransactionId,
+      props.at,
+      WagerTransactionStatus.Pending,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    );
+  }
 
   static opening(props: OpeningProps): WagerTransaction {
     return new WagerTransaction(
@@ -134,6 +200,67 @@ export class WagerTransaction {
     return this._resultBalance;
   }
 
+  markProcessed(referenceTransactionId: string | undefined, at: Date, resultBalance: Money): void {
+    this.assertNotTerminal('process');
+    this._status = WagerTransactionStatus.Processed;
+    this._referenceTransactionId = referenceTransactionId;
+    this._processedAt = at;
+    this._resultBalance = resultBalance;
+  }
+
+  markPendingReference(): void {
+    if (this._status !== WagerTransactionStatus.Pending || !this.requiresReference()) {
+      throw new InvalidTransactionStateError(`Cannot wait for a reference from ${this._status} (${this.kind})`);
+    }
+    this._status = WagerTransactionStatus.PendingReference;
+  }
+
+  reject(code: string, resultBalance: Money | undefined): void {
+    this.assertNotTerminal('reject');
+    this._status = WagerTransactionStatus.Rejected;
+    this._failureCode = code;
+    this._resultBalance = resultBalance;
+  }
+
+  fail(code: string): void {
+    this.assertNotTerminal('fail');
+    this._status = WagerTransactionStatus.Failed;
+    this._failureCode = code;
+  }
+
+  isTerminal(): boolean {
+    return TERMINAL_STATUSES.has(this._status);
+  }
+
+  affectsBalance(): boolean {
+    return this.kind !== WagerTransactionKind.Loss;
+  }
+
+  requiresReference(): boolean {
+    return REVERSAL_KINDS.has(this.kind);
+  }
+
+  matchesPayload(payloadHash: string): boolean {
+    return this.payloadHash === payloadHash;
+  }
+
+  ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection {
+    switch (this.kind) {
+      case WagerTransactionKind.Bet:
+        return LedgerDirection.Debit;
+      case WagerTransactionKind.Opening:
+      case WagerTransactionKind.Win:
+      case WagerTransactionKind.Refund:
+        return LedgerDirection.Credit;
+      case WagerTransactionKind.Rollback: {
+        if (!reference) throw new InvalidTransactionStateError('ROLLBACK needs its reference to pick a direction');
+        return reference.ledgerDirectionFor() === LedgerDirection.Debit ? LedgerDirection.Credit : LedgerDirection.Debit;
+      }
+      case WagerTransactionKind.Loss:
+        throw new InvalidTransactionStateError('LOSS does not move the balance');
+    }
+  }
+
   toState(): WagerTransactionState {
     return {
       id: this.id,
@@ -155,5 +282,11 @@ export class WagerTransaction {
       processedAt: this._processedAt,
       resultBalance: this._resultBalance,
     };
+  }
+
+  private assertNotTerminal(action: string): void {
+    if (this.isTerminal()) {
+      throw new InvalidTransactionStateError(`Cannot ${action} transaction ${this.id}: already ${this._status}`);
+    }
   }
 }

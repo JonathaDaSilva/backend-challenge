@@ -12,6 +12,10 @@ export interface PayloadIssue {
   readonly message: string;
 }
 
+export class ConcurrentModificationError extends ApplicationError {
+  readonly code = 'CONCURRENT_MODIFICATION';
+}
+
 export class InvalidPayloadError extends ApplicationError {
   readonly code = 'INVALID_PAYLOAD';
 

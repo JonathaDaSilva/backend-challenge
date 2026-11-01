@@ -2,8 +2,10 @@ import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { HealthModule } from './modules/health/health.module';
+import { WageringModule } from './modules/wagering/wagering.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { createMikroOrmConfig } from './shared/infrastructure/database/mikro-orm.config';
+import { PersistenceModule } from './shared/infrastructure/database/persistence.module';
 import { InfrastructureModule } from './shared/infrastructure/infrastructure.module';
 import { ErrorFilter } from './shared/presentation/error.filter';
 
@@ -13,8 +15,10 @@ import { ErrorFilter } from './shared/presentation/error.filter';
     MikroOrmModule.forRootAsync({
       useFactory: () => createMikroOrmConfig(),
     }),
+    PersistenceModule,
     HealthModule,
     WalletModule,
+    WageringModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: ErrorFilter }],
 })

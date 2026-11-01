@@ -10,6 +10,7 @@ export const entities = [WalletRecordSchema, WalletLedgerEntryRecordSchema, Wage
 export function createMikroOrmConfig(databaseUrl = loadConfig().databaseUrl) {
   return defineConfig({
     clientUrl: databaseUrl,
+    pool: { max: loadConfig().database.poolMax },
     entities,
     extensions: [Migrator],
     preferTs: true,
