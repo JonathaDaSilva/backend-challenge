@@ -11,9 +11,13 @@
     "db:migrate:up": "bun scripts/migrate.ts up",
     "db:migrate:down": "bun scripts/migrate.ts down",
     "db:migrate:create": "bun scripts/migrate.ts create",
-    "db:migrate:pending": "bun scripts/migrate.ts pending"
+    "db:migrate:pending": "bun scripts/migrate.ts pending",
+    "test": "bun test test/unit",
+    "test:integration": "bun test test/integration",
+    "test:all": "bun test"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1161.0",
     "@mikro-orm/core": "^7.2.6",
     "@mikro-orm/migrations": "^7.2.6",
     "@mikro-orm/nestjs": "^7.1.0",
