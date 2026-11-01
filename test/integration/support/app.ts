@@ -2,9 +2,12 @@ import 'reflect-metadata';
 import type { INestApplication } from '@nestjs/common';
 import { Test, type TestingModuleBuilder } from '@nestjs/testing';
 import { AppModule } from '../../../src/app.module';
+import { type AppConfig, loadConfig } from '../../../src/shared/infrastructure/config';
+import { APP_CONFIG } from '../../../src/shared/infrastructure/tokens';
 
 export interface StartedApp {
   readonly url: string;
+  get<T>(token: unknown): T;
   close(): Promise<void>;
 }
 
@@ -15,7 +18,17 @@ export async function startApp(
   const app: INestApplication = moduleRef.createNestApplication({ logger: false });
   await app.listen(0);
   const url = await app.getUrl();
-  return { url, close: () => app.close() };
+  return {
+    url,
+    get: <T>(token: unknown) => app.get(token as never) as T,
+    close: () => app.close(),
+  };
+}
+
+export function withConfig(
+  overrides: (config: AppConfig) => AppConfig,
+): (builder: TestingModuleBuilder) => TestingModuleBuilder {
+  return (builder) => builder.overrideProvider(APP_CONFIG).useValue(overrides(loadConfig()));
 }
 
 export function postJson(url: string, body: unknown): Promise<Response> {

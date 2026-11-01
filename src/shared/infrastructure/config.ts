@@ -46,6 +46,13 @@ export interface AppConfig {
     readonly lockTimeoutMs: number;
     readonly statementTimeoutMs: number;
   };
+  readonly pendingReference: {
+    readonly workerEnabled: boolean;
+    readonly maxAttempts: number;
+    readonly baseDelayMs: number;
+    readonly maxDelayMs: number;
+    readonly batchSize: number;
+  };
   readonly aws: {
     readonly region: string;
     readonly endpoint: string;
@@ -68,6 +75,13 @@ export function loadConfig(): AppConfig {
       poolMax: positiveInt('DATABASE_POOL_MAX', '10'),
       lockTimeoutMs: positiveInt('DATABASE_LOCK_TIMEOUT_MS', '2000'),
       statementTimeoutMs: positiveInt('DATABASE_STATEMENT_TIMEOUT_MS', '5000'),
+    },
+    pendingReference: {
+      workerEnabled: required('PENDING_REFERENCE_WORKER_ENABLED', 'true') !== 'false',
+      maxAttempts: positiveInt('PENDING_REFERENCE_MAX_ATTEMPTS', '8'),
+      baseDelayMs: positiveInt('PENDING_REFERENCE_BASE_DELAY_MS', '1000'),
+      maxDelayMs: positiveInt('PENDING_REFERENCE_MAX_DELAY_MS', '60000'),
+      batchSize: positiveInt('PENDING_REFERENCE_BATCH_SIZE', '50'),
     },
     aws: {
       region: required('AWS_REGION', 'us-east-1'),

@@ -146,7 +146,7 @@ Convenções:
 | Estado coerente | `wager_tx_processed_at_ck` (PROCESSED ⇔ `processed_at`), `wager_tx_failure_code_ck` (REJECTED/FAILED ⇔ `failure_code`) |
 | Mesma referência, mesmo provider/player/wallet/moeda/rodada (regra 2) | trigger `assert_reversal_matches_reference` → `wager_tx_reversals_same_scope_ck` |
 | REFUND só de BET; ROLLBACK de BET/WIN/REFUND (regra 3) | trigger → `wager_tx_reversals_reference_kind_ck` |
-| Referência revertida no máximo uma vez por tipo (regra 4) | `wager_tx_reversals_single_uq (reference_transaction_id, kind)` |
+| Cada transação revertida no máximo uma vez, por qualquer tipo (regra 4, interpretação mais restrita; ver [Reversões](#reversões-refund-e-rollback)) | `wager_tx_reversals_reference_uq (reference_transaction_id)` |
 | Valor da reversão = valor da referência (regra 5) | trigger → `wager_tx_reversals_amount_ck` |
 | Só se reverte transação PROCESSED | trigger → `wager_tx_reversals_reference_processed_ck` |
 | Lançamento: `balanceBefore ± money = balanceAfter` | `wallet_ledger_balance_math_ck` |
@@ -160,7 +160,7 @@ A igualdade "saldo da wallet = soma do ledger" **não** é imposta por constrain
 ### Reversões: tabela de relacionamento em vez de FK composta
 
 As regras 2 a 5 poderiam ser uma FK composta auto-referente em `wager_transactions` (id, provider, player, wallet, moeda, rodada, valor e kind), mas ela exigiria uma unique de 8 colunas e uma coluna `reference_kind` redundante. Em vez disso, `wager_transaction_reversals` registra o vínculo `reversal → reference` **quando a reversão é aplicada**, na mesma transação SQL:
-- a regra 4 vira uma unique simples (`reference_transaction_id, kind`), sem índice parcial;
+- a regra 4 vira uma unique simples em `reference_transaction_id` (desde a #09; antes era por `(reference, kind)`), sem índice parcial;
 - a PK em `reversal_transaction_id` garante que cada reversão reverte uma única transação;
 - um trigger `BEFORE INSERT` valida as regras 2, 3 e 5 e a referência PROCESSED. Cada violação sai com SQLSTATE `23514` e um nome de constraint próprio;
 - a tabela é append-only, como o ledger.
@@ -229,7 +229,7 @@ Um `ExceptionFilter` global (`src/shared/presentation/error.filter.ts`) responde
 | Transação: mesma `Idempotency-Key` com outro payload | 409 | `IDEMPOTENCY_CONFLICT` (+ `transactionId` original) |
 | Transação: mesmo `(providerId, externalTransactionId)` com outra key | 409 | `DUPLICATE_EXTERNAL_TRANSACTION` |
 | Transação: wallet de outro player / outra moeda | 422 | `WALLET_PLAYER_MISMATCH` / `CURRENCY_MISMATCH` |
-| Transação: tipo ainda não suportado (REFUND/ROLLBACK até a #09) | 422 | `NOT_SUPPORTED` |
+| Transação aguardando referência | 202 | corpo do contrato com `status: "PENDING_REFERENCE"` |
 | Transação inexistente | 404 | `TRANSACTION_NOT_FOUND` |
 | Lock timeout, deadlock esgotado, banco indisponível | 503 | `TRANSIENT_FAILURE`: pode reenviar |
 | Dependência indisponível (health) | 503 | `SERVICE_UNAVAILABLE` |
@@ -304,11 +304,54 @@ Transição a partir de um estado terminal lança `InvalidTransactionStateError`
 - **WIN:** valor > 0, crédito. Um prêmio de zero é um LOSS.
 - **LOSS:** valor ≥ 0. PROCESSED sem mexer no saldo nem no ledger; `result_balance` grava o saldo do momento.
 - **OPENING:** recusado na entrada (só nasce internamente).
-- **REFUND/ROLLBACK:** 422 `NOT_SUPPORTED` até a #09.
+- **REFUND/ROLLBACK:** ver [Reversões](#reversões-refund-e-rollback).
 
 **Interpretação documentada:** "WIN pode referenciar a BET da mesma rodada" é tratado como **associação pelo `roundId`**. O WIN não carrega `referenceExternalTransactionId`, porque o schema só admite referência em REFUND/ROLLBACK (`wager_tx_reference_ck`).
 
-**HTTP:** 201 para PROCESSED, 422 para REJECTED (o mesmo corpo do contrato, com `status` e `failureCode`), 202 reservado para PENDING_REFERENCE (#09). Consultas: `GET /wagering/transactions/:transactionId` e `GET /providers/:providerId/wagering/transactions/:externalTransactionId`.
+**HTTP:** 201 para PROCESSED, 422 para REJECTED (o mesmo corpo do contrato, com `status` e `failureCode`), 202 para PENDING_REFERENCE. Consultas: `GET /wagering/transactions/:transactionId` e `GET /providers/:providerId/wagering/transactions/:externalTransactionId`.
+
+## Reversões: REFUND e ROLLBACK
+
+As reversões usam o mesmo use case e o mesmo `WagerProcessor` das demais transações. A diferença está no passo de decisão:
+
+```
+resolve a referência por (providerId, referenceExternalTransactionId)
+  ├─ não existe, ou está ela mesma PENDING_REFERENCE  → PENDING_REFERENCE (202), agenda nova tentativa
+  └─ existe → WagerTransaction.checkReversalOf(referência):
+        provider/player/wallet/moeda/rodada diferentes  → REJECTED REFERENCE_MISMATCH
+        REFUND de algo que não é BET;
+        ROLLBACK de algo fora de BET/WIN/REFUND         → REJECTED INVALID_REFERENCE_KIND
+        valor diferente                                 → REJECTED REFERENCE_AMOUNT_MISMATCH
+        referência não PROCESSED                        → REJECTED REFERENCE_NOT_PROCESSED
+        já revertida (por qualquer tipo)                → REJECTED ALREADY_REVERSED
+     aplica: REFUND → crédito; ROLLBACK → direção inversa da referência
+        débito sem saldo                                → REJECTED REVERSAL_INSUFFICIENT_FUNDS
+     PROCESSED + lançamento + vínculo em wager_transaction_reversals
+```
+
+- **Onde ficam as regras:** as regras 2, 3 e 5 estão no domínio (`checkReversalOf`), cada uma com o seu `failureCode`. O trigger da #04 continua como segunda barreira: se a aplicação errar, o banco recusa.
+- **Regra 9:** a reversão que deixaria o saldo negativo recebe `REVERSAL_INSUFFICIENT_FUNDS`, distinto do `INSUFFICIENT_FUNDS` de um BET. Para o provedor são situações diferentes: num caso o jogador não tem saldo para apostar, no outro o cassino não consegue estornar um prêmio já gasto. A transação fica gravada como REJECTED e auditável.
+- **Interpretação mais restrita da regra 4:** o README diz "não pode ser revertida duas vezes **pelo mesmo tipo**". Ao pé da letra, um BET poderia receber um REFUND **e** um ROLLBACK e ser devolvido em dobro. Aqui, **cada transação é revertida no máximo uma vez, por qualquer tipo** (`wager_tx_reversals_reference_uq`), o que cumpre a regra e fecha esse vazamento. Desfazer um REFUND continua possível: o ROLLBACK do REFUND tem outra referência.
+- **Replay de uma pendente:** devolve o **estado atual**. Se já foi resolvida, o provedor recebe o resultado final; se ainda espera, recebe 202 com o saldo observado na submissão.
+
+### Referências fora de ordem
+
+**Caso comum, resolvido no mesmo commit.** Uma reversão só referencia transações da mesma wallet, e tudo na wallet passa pelo lock dela. Quando uma BET, WIN ou REFUND é processada, o mesmo `run`, ainda com o lock, busca as pendentes que esperam por ela (`wager_tx_pending_reference_lookup_idx`) e as aplica, em cascata: `ROLLBACK(REFUND(BET))` chegando ao contrário resolve tudo quando a BET chega. Em qualquer ordem de chegada o lock serializa os eventos, então não há espera nem corrida. Pendentes de outra wallet não são tocadas nesse caminho, porque o lock delas não está com este `run`; o worker as resolve depois (como `REFERENCE_MISMATCH`).
+
+**Worker agendado com backoff (§7.1).** `PendingReferenceWorker.processDue(now)` pega as vencidas (`wager_tx_pending_reference_due_idx`). Para cada uma, num `run` próprio: trava a wallet, relê a transação e a agenda, roda a mesma decisão e, se continuar sem referência, reagenda.
+- **Backoff:** `min(1 s × 2ⁿ, 60 s)` com *equal jitter* (metade fixa, metade aleatória). São **8 tentativas**, cerca de **3 minutos** no pior caso.
+- **Justificativa do limite:** referência fora de ordem é, na prática, reordenação de fila, e se resolve em segundos (e o caso comum nem passa pelo worker). Uma BET que não apareceu em 3 minutos dificilmente vai aparecer, e o provedor precisa de uma resposta definitiva.
+- **Configuração:** `PENDING_REFERENCE_MAX_ATTEMPTS`, `_BASE_DELAY_MS`, `_MAX_DELAY_MS`, `_BATCH_SIZE`.
+- **Esgotado:** REJECTED `REFERENCE_NOT_FOUND`. O evento correspondente entra pela outbox (#12).
+- **Agenda fora do agregado:** `attempts` e `next_attempt_at` são agenda, não regra de negócio. Ficam fora do agregado `WagerTransaction`, só na tabela e no repositório.
+
+**Agendamento sem polling.** Cada instância mantém **um** `setTimeout` apontado para o `next_attempt_at` mais próximo; sem pendentes, não há timer.
+- **Trigger:** `wager_tx_pending_reference_notify_trg` dispara `NOTIFY pending_reference` com o vencimento sempre que uma pendente é criada ou reagendada. O `NOTIFY` só é entregue no commit, então nunca acorda alguém por uma linha que sofreu rollback.
+- **Escuta:** cada instância escuta numa conexão dedicada (`pg.Client`, fora do pool) e adianta o timer se o vencimento novo for anterior.
+- **Disparo:** o timer roda o `processDue` e depois relê o próximo vencimento no banco.
+- **Reconexão:** ao reconectar o listener (ou ao subir a instância), o próximo vencimento é relido do banco, então uma notificação perdida não trava nenhuma pendente.
+- **Duplicidade:** várias instâncias podem acordar para a mesma linha. O lock da wallet e a releitura do status fazem a segunda pular (`skipped`). Pode haver trabalho repetido, mas nunca efeito duplicado; um teste com três workers simultâneos confirma um único crédito.
+- `PENDING_REFERENCE_WORKER_ENABLED=false` desliga o scheduler de uma instância. Os testes usam isso para chamar `processDue` diretamente, com datas controladas.
 
 ## Pendente (próximas issues)
 

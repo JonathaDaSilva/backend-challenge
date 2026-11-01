@@ -3,7 +3,6 @@ import {
   DuplicateExternalTransactionError,
   IdempotencyConflictError,
   TransactionNotFoundError,
-  UnsupportedKindError,
   WalletCurrencyMismatchError,
   WalletPlayerMismatchError,
 } from '../../modules/wagering/application/errors';
@@ -56,7 +55,6 @@ const MAPPINGS: readonly Mapping[] = [
   map(IdempotencyConflictError, 409, (e) => ({ ...coded(e), transactionId: e.transactionId })),
   map(DuplicateExternalTransactionError, 409, coded),
   map(UnsupportedCurrencyError, 422, (e) => ({ ...coded(e), supportedCurrencies: e.supported })),
-  map(UnsupportedKindError, 422, coded),
   map(WalletPlayerMismatchError, 422, coded),
   map(WalletCurrencyMismatchError, 422, coded),
 ];

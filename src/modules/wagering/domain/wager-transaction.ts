@@ -1,6 +1,7 @@
 import type { Money } from '../../../shared/domain/money';
 import { LedgerDirection } from '../../wallet/domain/wallet-ledger-entry';
 import { InvalidTransactionStateError, InvalidWagerTransactionError } from './errors';
+import { FailureCode } from './failure-codes';
 
 export enum WagerTransactionKind {
   Opening = 'OPENING',
@@ -26,6 +27,17 @@ const TERMINAL_STATUSES = new Set([
 ]);
 
 const REVERSAL_KINDS = new Set([WagerTransactionKind.Refund, WagerTransactionKind.Rollback]);
+
+const REVERSIBLE_KINDS: Partial<Record<WagerTransactionKind, ReadonlySet<WagerTransactionKind>>> = {
+  [WagerTransactionKind.Refund]: new Set([WagerTransactionKind.Bet]),
+  [WagerTransactionKind.Rollback]: new Set([
+    WagerTransactionKind.Bet,
+    WagerTransactionKind.Win,
+    WagerTransactionKind.Refund,
+  ]),
+};
+
+export type ReversalCheck = 'OK' | 'WAIT' | Exclude<FailureCode, 'INSUFFICIENT_FUNDS'>;
 
 export interface WagerTransactionState {
   readonly id: string;
@@ -208,11 +220,12 @@ export class WagerTransaction {
     this._resultBalance = resultBalance;
   }
 
-  markPendingReference(): void {
+  markPendingReference(observedBalance: Money): void {
     if (this._status !== WagerTransactionStatus.Pending || !this.requiresReference()) {
       throw new InvalidTransactionStateError(`Cannot wait for a reference from ${this._status} (${this.kind})`);
     }
     this._status = WagerTransactionStatus.PendingReference;
+    this._resultBalance = observedBalance;
   }
 
   reject(code: string, resultBalance: Money | undefined): void {
@@ -242,6 +255,27 @@ export class WagerTransaction {
 
   matchesPayload(payloadHash: string): boolean {
     return this.payloadHash === payloadHash;
+  }
+
+  checkReversalOf(reference: WagerTransaction): ReversalCheck {
+    if (!this.requiresReference()) {
+      throw new InvalidTransactionStateError(`${this.kind} does not reverse anything`);
+    }
+    if (reference.status === WagerTransactionStatus.PendingReference || reference.status === WagerTransactionStatus.Pending) {
+      return 'WAIT';
+    }
+    const sameScope =
+      reference.providerId === this.providerId &&
+      reference.externalTransactionId === this.referenceExternalTransactionId &&
+      reference.playerId === this.playerId &&
+      reference.walletId === this.walletId &&
+      reference.money.currency === this.money.currency &&
+      reference.roundId === this.roundId;
+    if (!sameScope) return FailureCode.ReferenceMismatch;
+    if (!REVERSIBLE_KINDS[this.kind]?.has(reference.kind)) return FailureCode.InvalidReferenceKind;
+    if (!reference.money.equals(this.money)) return FailureCode.ReferenceAmountMismatch;
+    if (reference.status !== WagerTransactionStatus.Processed) return FailureCode.ReferenceNotProcessed;
+    return 'OK';
   }
 
   ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection {
