@@ -18,6 +18,7 @@ function port(name: string, fallback: string): number {
 export interface AppConfig {
   readonly port: number;
   readonly databaseUrl: string;
+  readonly migrationDatabaseUrl: string;
   readonly aws: {
     readonly region: string;
     readonly endpoint: string;
@@ -33,7 +34,8 @@ export interface AppConfig {
 export function loadConfig(): AppConfig {
   return {
     port: port('PORT', '3000'),
-    databaseUrl: required('DATABASE_URL', 'postgres://wallet:wallet@localhost:5432/wallet'),
+    databaseUrl: required('DATABASE_URL', 'postgres://wallet_app:wallet_app@localhost:5432/wallet'),
+    migrationDatabaseUrl: required('MIGRATION_DATABASE_URL', 'postgres://wallet:wallet@localhost:5432/wallet'),
     aws: {
       region: required('AWS_REGION', 'us-east-1'),
       endpoint: required('AWS_ENDPOINT_URL', 'http://localhost:4566'),

@@ -1,9 +1,10 @@
 import { MikroORM } from '@mikro-orm/postgresql';
+import { loadConfig } from '../src/shared/infrastructure/config';
 import { createMikroOrmConfig } from '../src/shared/infrastructure/database/mikro-orm.config';
 
 const [command, ...args] = process.argv.slice(2);
 
-const orm = await MikroORM.init(createMikroOrmConfig());
+const orm = await MikroORM.init(createMikroOrmConfig(loadConfig().migrationDatabaseUrl));
 const migrator = orm.migrator;
 
 try {

@@ -3,7 +3,7 @@ import type { MikroORM } from '@mikro-orm/postgresql';
 import { GetQueueAttributesCommand, GetQueueUrlCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import { loadConfig } from '../../src/shared/infrastructure/config';
 import { createSqsClient } from '../../src/shared/infrastructure/sqs/sqs.client';
-import { initTestOrm } from './support/database';
+import { initOwnerOrm, initTestOrm } from './support/database';
 
 const config = loadConfig();
 let orm: MikroORM;
@@ -25,8 +25,18 @@ describe('PostgreSQL', () => {
     expect(row?.ok).toBe(1);
   });
 
+  test('connects as the least-privileged app role', async () => {
+    const [row] = await orm.em.getConnection().execute<{ user: string }[]>('select current_user as user');
+    expect(row?.user).toBe('wallet_app');
+  });
+
   test('has no pending migrations after migrating up', async () => {
-    expect(await orm.migrator.getPending()).toHaveLength(0);
+    const owner = await initOwnerOrm();
+    try {
+      expect(await owner.migrator.getPending()).toHaveLength(0);
+    } finally {
+      await owner.close(true);
+    }
   });
 });
 

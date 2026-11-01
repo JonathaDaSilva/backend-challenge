@@ -107,7 +107,91 @@ Wallet (domínio) ⇄ WalletMapper ⇄ WalletRecord ⇄ EntitySchema ⇄ tabela 
 - SQL escrito à mão, com `snapshot: false`: constraints, índices parciais e triggers de imutabilidade fazem parte do design (restrição 9) e não devem nascer de diff automático.
 - `transactional` e `allOrNothing`: um lote que falha não deixa o schema pela metade.
 - Toda migration tem `down`; o ciclo up → down → up é verificado.
+- Uma migration por agregado: `wallets`, `wager_transactions`, `wager_transaction_reversals`, `wallet_ledger_entries`, `inbox_messages`, `outbox_messages`.
+
+## Schema
+
+```
+wallets ──< wager_transactions ──< wallet_ledger_entries
+                ▲        ▲
+      reversal  │        │  reference
+                wager_transaction_reversals
+
+inbox_messages, outbox_messages: sem FK (registros de transporte)
+```
+
+- `wager_transactions → wallets`: FK `(wallet_id, player_id, currency)`.
+- `wallet_ledger_entries → wager_transactions`: FK `(transaction_id, wallet_id, currency)`. Por transitividade, a moeda do lançamento também é a da wallet.
+- `wager_transaction_reversals`: duas FKs simples para `wager_transactions`, uma da reversão e outra da referência.
+
+Convenções:
+- IDs `uuid` (UUIDv7) gerados pela aplicação;
+- `kind`, `status` e `direction` como `text` + `CHECK`, não enum do PG, porque um enum não aceita remover valor e complica o `down`;
+- valores monetários `numeric(20,2)` + `currency char(3)`;
+- toda constraint tem nome explícito (`<tabela>_<regra>_<uq|ck|fk>`), para os repositórios mapearem o nome a um erro de domínio sem interpretar mensagem.
+
+### Onde cada invariante é garantida
+
+| Invariante (README) | Garantia no banco |
+|---|---|
+| Uma wallet por `playerId` + `currency` | `wallets_player_currency_uq` |
+| Saldo nunca negativo | `wallets_balance_non_negative_ck`; no ledger, `wallet_ledger_balance_before_ck` e `_after_ck` |
+| `version` começa em 1 | `wallets_version_ck` |
+| Moeda da operação = moeda da wallet; wallet pertence ao player | FK composta `wager_tx_wallet_fk` → `wallets (id, player_id, currency)` |
+| Idempotency key única (escopo **global**: o header é a fonte da verdade) | `wager_tx_idempotency_key_uq` |
+| Transação única por provider | `wager_tx_provider_external_uq` |
+| REFUND/ROLLBACK exigem referência (regra 1) | `wager_tx_reference_ck` |
+| Só reversões podem ficar PENDING_REFERENCE | `wager_tx_pending_reference_ck` |
+| OPENING é interno | `wager_tx_opening_ck` (OPENING ⇔ sem `provider_id`), `wager_tx_provider_fields_ck` (as demais exigem todos os campos do provedor) |
+| Estado coerente | `wager_tx_processed_at_ck` (PROCESSED ⇔ `processed_at`), `wager_tx_failure_code_ck` (REJECTED/FAILED ⇔ `failure_code`) |
+| Mesma referência, mesmo provider/player/wallet/moeda/rodada (regra 2) | trigger `assert_reversal_matches_reference` → `wager_tx_reversals_same_scope_ck` |
+| REFUND só de BET; ROLLBACK de BET/WIN/REFUND (regra 3) | trigger → `wager_tx_reversals_reference_kind_ck` |
+| Referência revertida no máximo uma vez por tipo (regra 4) | `wager_tx_reversals_single_uq (reference_transaction_id, kind)` |
+| Valor da reversão = valor da referência (regra 5) | trigger → `wager_tx_reversals_amount_ck` |
+| Só se reverte transação PROCESSED | trigger → `wager_tx_reversals_reference_processed_ck` |
+| Lançamento: `balanceBefore ± money = balanceAfter` | `wallet_ledger_balance_math_ck` |
+| No máximo um lançamento por transação e wallet | `wallet_ledger_one_per_transaction_uq` |
+| Toda mudança de saldo tem exatamente um lançamento | `wallet_ledger_wallet_version_uq (wallet_id, wallet_version)`: como `version` só muda junto com o saldo, cada versão corresponde a um único lançamento, e dois débitos não conseguem ser aplicados sobre a mesma versão |
+| Ledger imutável (restrição 5) | trigger `forbid_mutation` contra UPDATE/DELETE/TRUNCATE e grant só de `SELECT, INSERT` |
+| Inbox deduplica `(consumerName, messageId)` | `inbox_messages_pk` |
+
+A igualdade "saldo da wallet = soma do ledger" **não** é imposta por constraint: ela exigiria um trigger por mudança de saldo, que pesaria em toda escrita. Ela é verificada pela reconciliação (#13) e pelos testes de invariante (#15).
+
+### Reversões: tabela de relacionamento em vez de FK composta
+
+As regras 2 a 5 poderiam ser uma FK composta auto-referente em `wager_transactions` (id, provider, player, wallet, moeda, rodada, valor e kind), mas ela exigiria uma unique de 8 colunas e uma coluna `reference_kind` redundante. Em vez disso, `wager_transaction_reversals` registra o vínculo `reversal → reference` **quando a reversão é aplicada**, na mesma transação SQL:
+- a regra 4 vira uma unique simples (`reference_transaction_id, kind`), sem índice parcial;
+- a PK em `reversal_transaction_id` garante que cada reversão reverte uma única transação;
+- um trigger `BEFORE INSERT` valida as regras 2, 3 e 5 e a referência PROCESSED. Cada violação sai com SQLSTATE `23514` e um nome de constraint próprio;
+- a tabela é append-only, como o ledger.
+
+O `referenceTransactionId` do domínio é lido por join nessa tabela. Enquanto a reversão está PENDING_REFERENCE, só existe a `reference_external_transaction_id` na própria transação.
+
+### Roles: owner e aplicação
+
+O PostgreSQL controla permissões por role (usuário). São dois:
+
+| Role | Uso | Permissões |
+|---|---|---|
+| `wallet` (owner) | só migrations (`MIGRATION_DATABASE_URL`) | dono das tabelas; pode tudo |
+| `wallet_app` | API e workers (`DATABASE_URL`) | `wallets`, `wager_transactions`, `inbox_messages`, `outbox_messages`: `SELECT, INSERT, UPDATE`. `wallet_ledger_entries`, `wager_transaction_reversals`: só `SELECT, INSERT`. Nenhum `DELETE`, `TRUNCATE` ou DDL |
+
+Por que as duas camadas: o trigger protege contra qualquer um, inclusive o owner. Mas o owner pode desabilitar o trigger (`ALTER TABLE … DISABLE TRIGGER`), e o `wallet_app` não pode, porque não é dono da tabela. Para ele, apagar ou alterar o ledger falha com `42501` antes mesmo do trigger. Assim, nem um bug nem uma injeção de SQL na aplicação consegue reescrever histórico.
+
+O `wallet_app` é criado por `docker/postgres/init/01-app-role.sql`, que roda só na criação do volume. Cada migration concede os grants das suas tabelas.
+
+### Índices
+
+| Consumidor | Índice |
+|---|---|
+| Ledger com cursor (#13) | `wallet_ledger_cursor_idx (wallet_id, seq)`; `seq` é uma identity, ordem estável |
+| Worker de PENDING_REFERENCE (#09) | parcial `wager_tx_pending_reference_due_idx (next_attempt_at) WHERE status = 'PENDING_REFERENCE'` |
+| Destravar pendentes quando a referência chega | parcial `wager_tx_pending_reference_lookup_idx (provider_id, reference_external_transaction_id) WHERE status = 'PENDING_REFERENCE'` |
+| Publisher da outbox (#12) | parcial `outbox_messages_pending_idx (next_attempt_at, seq) WHERE published_at IS NULL`: contém só o que falta publicar |
+| Consulta por provider/external id | a própria `wager_tx_provider_external_uq` |
+
+Os testes em `test/integration/schema/` provam cada linha da tabela de invariantes, verificando o SQLSTATE e o nome da constraint.
 
 ## Pendente (próximas issues)
 
-Schema e constraints (#04), concorrência (#06), idempotência (#07), taxonomia de erros (#10), inbox/outbox (#11, #12), autenticação (#17).
+Concorrência (#06), idempotência (#07), taxonomia de erros (#10), inbox/outbox (#11, #12), autenticação (#17).
