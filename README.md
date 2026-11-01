@@ -11,7 +11,9 @@ bun run db:migrate:up
 bun run start                    # http://localhost:3000
 ```
 
-Sem `.env`, os valores padrão já apontam para os serviços do `docker-compose.yml` (veja `.env.example`).
+Sem `.env`, os valores padrão já apontam para os serviços do `docker-compose.yml` (veja `.env.example`). A API conecta como `wallet_app` (`DATABASE_URL`), e as migrations rodam como o owner `wallet` (`MIGRATION_DATABASE_URL`).
+
+O role `wallet_app` é criado quando o volume do PostgreSQL nasce. Se o seu volume é anterior a essa mudança, recrie com `docker compose down -v`.
 
 | Comando | O que faz |
 |---|---|
