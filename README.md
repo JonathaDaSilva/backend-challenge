@@ -1,5 +1,50 @@
 # Technical Challenge — Distributed Wagering Processor
 
+## Como rodar
+
+**Pré-requisitos:** [Bun 1.x](https://bun.sh) e Docker com Compose v2.
+
+```bash
+bun install
+docker compose up -d --wait      # PostgreSQL 17 + SQS (MiniStack) com as filas FIFO e a DLQ
+bun run db:migrate:up
+bun run start                    # http://localhost:3000
+```
+
+Sem `.env`, os valores padrão já apontam para os serviços do `docker-compose.yml` (veja `.env.example`).
+
+| Comando | O que faz |
+|---|---|
+| `bun run dev` | sobe a API com reload automático |
+| `bun test` | todos os testes (exige o compose rodando) |
+| `bun run test` | só testes unitários |
+| `bun run test:integration` | integração com PostgreSQL e SQS reais |
+| `bun run typecheck` / `bun run lint` | TypeScript estrito e regras de camadas |
+| `bun run db:migrate:up` | aplica migrations pendentes |
+| `bun run db:migrate:down` | reverte a última (`--to <nome>` ou `--all`) |
+| `bun run db:migrate:create <nome>` | cria migration vazia em `migrations/` |
+| `bun run db:migrate:pending` | lista as pendentes |
+| `docker compose down -v` | derruba tudo e apaga os dados |
+
+Health checks: `GET /health/live` e `GET /health/ready` (PostgreSQL + SQS).
+
+### Estrutura
+
+```
+src/
+  modules/<contexto>/{domain,application,infrastructure,presentation}
+  shared/{domain,infrastructure}
+migrations/        SQL versionado e reversível (MikroORM Migrator)
+docker/sqs/init/   criação das filas no boot do container
+test/{unit,integration}
+```
+
+`domain/` não pode importar NestJS, MikroORM nem camadas externas; o `eslint` bloqueia.
+
+Decisões e trade-offs: [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+
+---
+
 ## Bem-vindo à Jungle Gaming 🦧
 
 A **Jungle Gaming** é uma software house especializada em iGaming — desenvolvemos plataformas de cassino online com tecnologia de ponta: NestJS, Bun, TanStack, DDD e arquitetura orientada a eventos. Somos apaixonados por engenharia de software e acreditamos que grandes produtos nascem de grandes times.
