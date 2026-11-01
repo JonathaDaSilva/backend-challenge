@@ -15,6 +15,15 @@ function port(name: string, fallback: string): number {
   return value;
 }
 
+function positiveInt(name: string, fallback: string): number {
+  const raw = required(name, fallback);
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Invalid positive integer in ${name}: ${raw}`);
+  }
+  return value;
+}
+
 function currencyList(name: string, fallback: string): readonly string[] {
   const codes = required(name, fallback)
     .split(',')
@@ -32,6 +41,11 @@ export interface AppConfig {
   readonly databaseUrl: string;
   readonly migrationDatabaseUrl: string;
   readonly supportedCurrencies: readonly string[];
+  readonly database: {
+    readonly poolMax: number;
+    readonly lockTimeoutMs: number;
+    readonly statementTimeoutMs: number;
+  };
   readonly aws: {
     readonly region: string;
     readonly endpoint: string;
@@ -50,6 +64,11 @@ export function loadConfig(): AppConfig {
     databaseUrl: required('DATABASE_URL', 'postgres://wallet_app:wallet_app@localhost:5432/wallet'),
     migrationDatabaseUrl: required('MIGRATION_DATABASE_URL', 'postgres://wallet:wallet@localhost:5432/wallet'),
     supportedCurrencies: currencyList('SUPPORTED_CURRENCIES', 'BRL'),
+    database: {
+      poolMax: positiveInt('DATABASE_POOL_MAX', '10'),
+      lockTimeoutMs: positiveInt('DATABASE_LOCK_TIMEOUT_MS', '2000'),
+      statementTimeoutMs: positiveInt('DATABASE_STATEMENT_TIMEOUT_MS', '5000'),
+    },
     aws: {
       region: required('AWS_REGION', 'us-east-1'),
       endpoint: required('AWS_ENDPOINT_URL', 'http://localhost:4566'),

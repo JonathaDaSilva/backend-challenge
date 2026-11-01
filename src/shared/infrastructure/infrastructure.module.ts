@@ -22,8 +22,9 @@ import { UuidV7IdGenerator } from './uuid-v7-id-generator';
     },
     {
       provide: TRANSACTION_RUNNER,
-      inject: [EntityManager],
-      useFactory: (em: EntityManager) => new MikroOrmTransactionRunner(em),
+      inject: [EntityManager, APP_CONFIG],
+      useFactory: (em: EntityManager, config: AppConfig) =>
+        new MikroOrmTransactionRunner(em, undefined, config.database),
     },
     { provide: ID_GENERATOR, useClass: UuidV7IdGenerator },
     { provide: CLOCK, useClass: SystemClock },

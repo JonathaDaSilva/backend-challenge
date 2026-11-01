@@ -1,0 +1,130 @@
+import { describe, expect, test } from 'bun:test';
+import { Money } from '../../../src/shared/domain/money';
+import { InvalidTransactionStateError, InvalidWagerTransactionError } from '../../../src/modules/wagering/domain/errors';
+import {
+  type CreateWagerTransactionProps,
+  WagerTransaction,
+  WagerTransactionKind,
+  WagerTransactionStatus,
+} from '../../../src/modules/wagering/domain/wager-transaction';
+import { LedgerDirection } from '../../../src/modules/wallet/domain/wallet-ledger-entry';
+
+const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });
+const at = new Date('2026-11-01T12:00:00.000Z');
+
+const props = (overrides: Partial<CreateWagerTransactionProps> = {}): CreateWagerTransactionProps => ({
+  id: 'tx-1',
+  providerId: 'provider-a',
+  externalTransactionId: 'ext-1',
+  idempotencyKey: 'provider-a:ext-1',
+  payloadHash: 'a'.repeat(64),
+  walletId: 'wallet-1',
+  playerId: 'player-1',
+  roundId: 'round-1',
+  gameId: 'game-1',
+  kind: WagerTransactionKind.Bet,
+  money: brl('10.00'),
+  referenceExternalTransactionId: undefined,
+  at,
+  ...overrides,
+});
+
+describe('WagerTransaction.create', () => {
+  test('starts PENDING', () => {
+    const transaction = WagerTransaction.create(props());
+    expect(transaction.status).toBe(WagerTransactionStatus.Pending);
+    expect(transaction.isTerminal()).toBe(false);
+  });
+
+  test.each([
+    ['OPENING', { kind: WagerTransactionKind.Opening }, 'OPENING_NOT_ALLOWED'],
+    ['REFUND without reference', { kind: WagerTransactionKind.Refund }, 'REFERENCE_REQUIRED'],
+    ['ROLLBACK without reference', { kind: WagerTransactionKind.Rollback }, 'REFERENCE_REQUIRED'],
+    ['BET with reference', { referenceExternalTransactionId: 'ext-0' }, 'REFERENCE_NOT_ALLOWED'],
+    ['WIN with reference', { kind: WagerTransactionKind.Win, referenceExternalTransactionId: 'ext-0' }, 'REFERENCE_NOT_ALLOWED'],
+    ['zero BET', { money: brl('0.00') }, 'AMOUNT_MUST_BE_POSITIVE'],
+    ['zero WIN', { kind: WagerTransactionKind.Win, money: brl('0.00') }, 'AMOUNT_MUST_BE_POSITIVE'],
+    ['negative LOSS', { kind: WagerTransactionKind.Loss, money: brl('-1.00') }, 'NEGATIVE_AMOUNT'],
+  ] as const)('rejects %s', (_, overrides, reason) => {
+    try {
+      WagerTransaction.create(props(overrides));
+      throw new Error('expected create to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InvalidWagerTransactionError);
+      expect((error as InvalidWagerTransactionError).reason).toBe(reason);
+    }
+  });
+
+  test('accepts a zero LOSS', () => {
+    expect(WagerTransaction.create(props({ kind: WagerTransactionKind.Loss, money: brl('0.00') })).affectsBalance()).toBe(
+      false,
+    );
+  });
+});
+
+describe('transitions', () => {
+  test('markProcessed records the reference, time and observed balance', () => {
+    const transaction = WagerTransaction.create(props());
+    transaction.markProcessed(undefined, at, brl('90.00'));
+    expect(transaction.status).toBe(WagerTransactionStatus.Processed);
+    expect(transaction.processedAt).toEqual(at);
+    expect(transaction.resultBalance?.toString()).toBe('90.00');
+  });
+
+  test('reject keeps the balance observed at that moment', () => {
+    const transaction = WagerTransaction.create(props());
+    transaction.reject('INSUFFICIENT_FUNDS', brl('5.00'));
+    expect(transaction.status).toBe(WagerTransactionStatus.Rejected);
+    expect(transaction.failureCode).toBe('INSUFFICIENT_FUNDS');
+    expect(transaction.processedAt).toBeUndefined();
+  });
+
+  test.each([
+    ['PROCESSED', (t: WagerTransaction) => t.markProcessed(undefined, at, brl('1.00'))],
+    ['REJECTED', (t: WagerTransaction) => t.reject('X', undefined)],
+    ['FAILED', (t: WagerTransaction) => t.fail('X')],
+  ])('a %s transaction is terminal', (_, finish) => {
+    const transaction = WagerTransaction.create(props());
+    finish(transaction);
+    expect(transaction.isTerminal()).toBe(true);
+    expect(() => transaction.markProcessed(undefined, at, brl('1.00'))).toThrow(InvalidTransactionStateError);
+    expect(() => transaction.reject('Y', undefined)).toThrow(InvalidTransactionStateError);
+    expect(() => transaction.fail('Y')).toThrow(InvalidTransactionStateError);
+  });
+
+  test('only a pending reversal can wait for its reference', () => {
+    const refund = WagerTransaction.create(
+      props({ kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-0' }),
+    );
+    refund.markPendingReference();
+    expect(refund.status).toBe(WagerTransactionStatus.PendingReference);
+    expect(() => refund.markPendingReference()).toThrow(InvalidTransactionStateError);
+    refund.markProcessed('tx-0', at, brl('10.00'));
+    expect(refund.referenceTransactionId).toBe('tx-0');
+
+    expect(() => WagerTransaction.create(props()).markPendingReference()).toThrow(InvalidTransactionStateError);
+  });
+});
+
+describe('domain queries', () => {
+  test('ledger direction per kind', () => {
+    const of = (kind: WagerTransactionKind, reference?: string) =>
+      WagerTransaction.create(props({ kind, referenceExternalTransactionId: reference }));
+    const bet = of(WagerTransactionKind.Bet);
+    const win = of(WagerTransactionKind.Win);
+
+    expect(bet.ledgerDirectionFor()).toBe(LedgerDirection.Debit);
+    expect(win.ledgerDirectionFor()).toBe(LedgerDirection.Credit);
+    expect(of(WagerTransactionKind.Refund, 'ext-0').ledgerDirectionFor()).toBe(LedgerDirection.Credit);
+    expect(of(WagerTransactionKind.Rollback, 'ext-0').ledgerDirectionFor(bet)).toBe(LedgerDirection.Credit);
+    expect(of(WagerTransactionKind.Rollback, 'ext-0').ledgerDirectionFor(win)).toBe(LedgerDirection.Debit);
+    expect(() => of(WagerTransactionKind.Rollback, 'ext-0').ledgerDirectionFor()).toThrow(InvalidTransactionStateError);
+    expect(() => of(WagerTransactionKind.Loss).ledgerDirectionFor()).toThrow(InvalidTransactionStateError);
+  });
+
+  test('matchesPayload compares the stored hash', () => {
+    const transaction = WagerTransaction.create(props());
+    expect(transaction.matchesPayload('a'.repeat(64))).toBe(true);
+    expect(transaction.matchesPayload('b'.repeat(64))).toBe(false);
+  });
+});

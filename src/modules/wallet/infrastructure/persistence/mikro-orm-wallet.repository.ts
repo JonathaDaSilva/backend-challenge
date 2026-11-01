@@ -1,4 +1,6 @@
+import { LockMode } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
+import { ConcurrentModificationError } from '../../../../shared/application/errors';
 import { isUniqueViolation } from '../../../../shared/infrastructure/database/constraint-violation';
 import { WalletAlreadyExistsError } from '../../application/errors';
 import type { LedgerRepository, WalletRepository } from '../../application/ports';
@@ -25,6 +27,27 @@ export class MikroOrmWalletRepository implements WalletRepository {
   async findById(id: string): Promise<Wallet | undefined> {
     const record = await this.em.findOne(WalletRecord, { id }, { disableIdentityMap: true });
     return record ? WalletMapper.toDomain(record) : undefined;
+  }
+
+  async findByIdForUpdate(id: string): Promise<Wallet | undefined> {
+    const record = await this.em.findOne(
+      WalletRecord,
+      { id },
+      { disableIdentityMap: true, lockMode: LockMode.PESSIMISTIC_WRITE },
+    );
+    return record ? WalletMapper.toDomain(record) : undefined;
+  }
+
+  async saveBalance(wallet: Wallet, expectedVersion: number): Promise<void> {
+    const { balanceAmount, version, updatedAt } = WalletMapper.toRecord(wallet);
+    const affected = await this.em.nativeUpdate(
+      WalletRecord,
+      { id: wallet.id, version: expectedVersion },
+      { balanceAmount, version, updatedAt },
+    );
+    if (affected !== 1) {
+      throw new ConcurrentModificationError(`Wallet ${wallet.id} is no longer at version ${expectedVersion}`);
+    }
   }
 
   async findByPlayerAndCurrency(playerId: string, currency: string): Promise<Wallet | undefined> {

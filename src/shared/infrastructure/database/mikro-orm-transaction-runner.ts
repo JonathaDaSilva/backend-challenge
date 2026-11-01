@@ -8,12 +8,19 @@ export interface TransactionRetryOptions {
   readonly baseDelayMs: number;
 }
 
+export interface TransactionTimeouts {
+  readonly lockTimeoutMs: number;
+  readonly statementTimeoutMs: number;
+}
+
 const DEFAULT_RETRY: TransactionRetryOptions = { maxAttempts: 3, baseDelayMs: 20 };
+const DEFAULT_TIMEOUTS: TransactionTimeouts = { lockTimeoutMs: 2000, statementTimeoutMs: 5000 };
 
 export class MikroOrmTransactionRunner implements TransactionRunner {
   constructor(
     private readonly em: EntityManager,
     private readonly retry: TransactionRetryOptions = DEFAULT_RETRY,
+    private readonly timeouts: TransactionTimeouts = DEFAULT_TIMEOUTS,
   ) {}
 
   async run<T>(work: () => Promise<T>): Promise<T> {
@@ -24,9 +31,16 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
 
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.em.transactional(() => work(), {
-          isolationLevel: IsolationLevel.READ_COMMITTED,
-        });
+        return await this.em.transactional(
+          async (em) => {
+            await em.execute("select set_config('lock_timeout', ?, true), set_config('statement_timeout', ?, true)", [
+              `${this.timeouts.lockTimeoutMs}ms`,
+              `${this.timeouts.statementTimeoutMs}ms`,
+            ]);
+            return work();
+          },
+          { isolationLevel: IsolationLevel.READ_COMMITTED },
+        );
       } catch (error) {
         if (attempt >= this.retry.maxAttempts || !isRetryableTransactionError(error)) throw error;
         await Bun.sleep(this.backoff(attempt));
