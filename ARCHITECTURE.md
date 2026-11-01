@@ -56,6 +56,29 @@ Wallet (domínio) ⇄ WalletMapper ⇄ WalletRecord ⇄ EntitySchema ⇄ tabela 
 - Cada módulo tem, em `infrastructure/persistence/`, um record (classe só com campos), o `EntitySchema` desse record e um mapper. `toDomain(record)` chama `Wallet.rehydrate(...)`; `toRecord(wallet.toState())` faz o caminho inverso. O domínio só expõe um snapshot readonly (`toState()`).
 - **Trade-off aceito:** os agregados perdem o dirty-checking automático do Unit of Work. Não faz falta aqui: o update de saldo vai ser SQL explícito e controlado por concorrência (#06), e o ledger é append-only (só INSERT).
 
+## Money
+
+`src/shared/domain/money.ts`: value object imutável (construtor privado e `Object.freeze`), sem dependência de framework ou ORM.
+
+**Representação: big.js.** As operações que o domínio usa (`plus`, `minus`, comparações) são sempre exatas no big.js. As opções de precisão e arredondamento (`DP`/`RM`) só afetam divisão, raiz e potência, que o sistema não usa, então não existe ponto de arredondamento silencioso. O decimal.js foi descartado porque arredonda até soma e subtração quando o resultado passa de `precision` dígitos significativos, e o padrão (20) coincide exatamente com o tamanho máximo de `numeric(20,2)`. O `Money` usa um construtor local (`Big()`) com `strict = true`, que rejeita `number` em qualquer argumento, sem alterar a configuração global da biblioteca. O esqueleto do README tipa o campo como `Decimal`; a garantia é a mesma.
+
+**Política de entrada (escala estrita):** só se aceita a forma canônica `^-?(0|[1-9]\d*)\.\d{2}$`, com até 18 dígitos inteiros.
+
+| Entrada | Resultado (`InvalidMoneyError.reason`) |
+|---|---|
+| `"25.00"`, `"0.01"` | aceita |
+| `25`, `25.5`, `null` (não string) | `NOT_A_STRING`: um `number` JSON pode já ter perdido precisão |
+| `"25.001"` | `TOO_MANY_DECIMALS` |
+| `"25"`, `"25.5"`, `""`, `" 25.00"`, `"NaN"`, `"Infinity"`, `"1e3"`, `"+25.00"`, `"025.00"`, `"-0.00"`, `"25,00"` | `INVALID_FORMAT` |
+| 19 ou mais dígitos inteiros, inclusive como resultado de `add`/`subtract` | `OUT_OF_RANGE`: o mesmo limite do `numeric(20,2)`, para o erro surgir no domínio e não como falha de infraestrutura |
+| moeda fora de `^[A-Z]{3}$` (inclui `"brl"`) | `INVALID_CURRENCY` |
+| negativo em contrato de entrada | `NEGATIVE_NOT_ALLOWED` |
+
+- **Por que estrita:** o README pede escala fixa de 2 casas. Além disso, uma única representação por valor deixa o hash do payload (#07) determinístico sem normalização: `"25.0"` e `"25.00"` nunca chegam a ser dois payloads distintos.
+- **`from` vs `fromInput`:** `Money.from()` aceita sinal, porque o domínio precisa de negativos (`negate()`, cálculos intermediários) e é por ele que a persistência reidrata. `Money.fromInput()` é a porta dos contratos HTTP/SQS e rejeita negativos. Se `0.00` é permitido ou não depende do tipo de transação, e fica para as regras de negócio (#08).
+- **Moedas:** operações e comparações de ordem entre moedas diferentes lançam `CurrencyMismatchError`; `equals` apenas devolve `false`. Quais moedas são suportadas é decisão da wallet, não do `Money`.
+- **Serialização:** `toJSON()` devolve `MoneyProps` (`{ amount: "25.00", currency: "BRL" }`) e `toString()` usa sempre 2 casas. O zero negativo é normalizado para `"0.00"`.
+
 ## Money na persistência
 
 - Duas colunas: `<campo>_amount numeric(20,2)` e `currency char(3)`. A escala de 2 casas é imposta pelo próprio tipo da coluna, e as `CHECK` de não-negatividade entram na #04.
@@ -87,4 +110,4 @@ Wallet (domínio) ⇄ WalletMapper ⇄ WalletRecord ⇄ EntitySchema ⇄ tabela 
 
 ## Pendente (próximas issues)
 
-Money (#03), schema e constraints (#04), concorrência (#06), idempotência (#07), taxonomia de erros (#10), inbox/outbox (#11, #12), autenticação (#17).
+Schema e constraints (#04), concorrência (#06), idempotência (#07), taxonomia de erros (#10), inbox/outbox (#11, #12), autenticação (#17).
