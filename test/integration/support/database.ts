@@ -13,3 +13,22 @@ export async function initTestOrm(): Promise<MikroORM> {
   await owner.close(true);
   return MikroORM.init(createMikroOrmConfig(loadConfig().databaseUrl));
 }
+
+export interface TestDatabases {
+  readonly owner: MikroORM;
+  readonly app: MikroORM;
+  close(): Promise<void>;
+}
+
+export async function initTestDatabases(): Promise<TestDatabases> {
+  const owner = await initOwnerOrm();
+  const app = await MikroORM.init(createMikroOrmConfig(loadConfig().databaseUrl));
+  return {
+    owner,
+    app,
+    async close() {
+      await app.close(true);
+      await owner.close(true);
+    },
+  };
+}
