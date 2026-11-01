@@ -128,3 +128,64 @@ describe('domain queries', () => {
     expect(transaction.matchesPayload('b'.repeat(64))).toBe(false);
   });
 });
+
+describe('checkReversalOf', () => {
+  const processed = (overrides: Partial<CreateWagerTransactionProps> = {}) => {
+    const transaction = WagerTransaction.create(props({ id: 'ref', externalTransactionId: 'ext-ref', ...overrides }));
+    transaction.markProcessed(undefined, at, brl('90.00'));
+    return transaction;
+  };
+  const reversal = (kind: WagerTransactionKind, overrides: Partial<CreateWagerTransactionProps> = {}) =>
+    WagerTransaction.create(
+      props({ id: 'rev', externalTransactionId: 'ext-rev', kind, referenceExternalTransactionId: 'ext-ref', ...overrides }),
+    );
+
+  test('accepts a REFUND of a processed BET in the same scope', () => {
+    expect(reversal(WagerTransactionKind.Refund).checkReversalOf(processed())).toBe('OK');
+  });
+
+  test('accepts a ROLLBACK of a BET, a WIN or a REFUND', () => {
+    expect(reversal(WagerTransactionKind.Rollback).checkReversalOf(processed())).toBe('OK');
+    expect(reversal(WagerTransactionKind.Rollback).checkReversalOf(processed({ kind: WagerTransactionKind.Win }))).toBe(
+      'OK',
+    );
+    const refund = WagerTransaction.create(
+      props({ id: 'ref', externalTransactionId: 'ext-ref', kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-0' }),
+    );
+    refund.markProcessed('tx-0', at, brl('100.00'));
+    expect(reversal(WagerTransactionKind.Rollback).checkReversalOf(refund)).toBe('OK');
+  });
+
+  test('waits while the reference is itself waiting', () => {
+    const pendingRefund = WagerTransaction.create(
+      props({ id: 'ref', externalTransactionId: 'ext-ref', kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-0' }),
+    );
+    pendingRefund.markPendingReference();
+    expect(reversal(WagerTransactionKind.Rollback).checkReversalOf(pendingRefund)).toBe('WAIT');
+  });
+
+  test.each([
+    ['another round', { roundId: 'round-2' }, 'REFERENCE_MISMATCH'],
+    ['another wallet', { walletId: 'wallet-2' }, 'REFERENCE_MISMATCH'],
+    ['another player', { playerId: 'player-2' }, 'REFERENCE_MISMATCH'],
+    ['another provider', { providerId: 'provider-b' }, 'REFERENCE_MISMATCH'],
+    ['another amount', { money: brl('9.99') }, 'REFERENCE_AMOUNT_MISMATCH'],
+  ] as const)('rejects a reference from %s', (_, overrides, expected) => {
+    expect(reversal(WagerTransactionKind.Refund).checkReversalOf(processed(overrides))).toBe(expected);
+  });
+
+  test('REFUND only reverses a BET; ROLLBACK never reverses a LOSS', () => {
+    expect(reversal(WagerTransactionKind.Refund).checkReversalOf(processed({ kind: WagerTransactionKind.Win }))).toBe(
+      'INVALID_REFERENCE_KIND',
+    );
+    expect(reversal(WagerTransactionKind.Rollback).checkReversalOf(processed({ kind: WagerTransactionKind.Loss }))).toBe(
+      'INVALID_REFERENCE_KIND',
+    );
+  });
+
+  test('a rejected reference cannot be reversed', () => {
+    const rejected = WagerTransaction.create(props({ id: 'ref', externalTransactionId: 'ext-ref' }));
+    rejected.reject('INSUFFICIENT_FUNDS', brl('1.00'));
+    expect(reversal(WagerTransactionKind.Refund).checkReversalOf(rejected)).toBe('REFERENCE_NOT_PROCESSED');
+  });
+});

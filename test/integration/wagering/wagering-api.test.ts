@@ -142,7 +142,7 @@ describe('POST /wagering/transactions', () => {
       ['a zero BET', { amount: '0.00' }, 400, 'INVALID_PAYLOAD'],
       ['a numeric amount', { body: { money: { amount: 10, currency: 'BRL' } } }, 400, 'INVALID_PAYLOAD'],
       ['a WIN with a reference', { kind: 'WIN', body: { referenceExternalTransactionId: 'ext-0' } }, 400, 'INVALID_PAYLOAD'],
-      ['REFUND (until #09)', { kind: 'REFUND', body: { referenceExternalTransactionId: 'ext-0' } }, 422, 'NOT_SUPPORTED'],
+      ['a REFUND without reference', { kind: 'REFUND' }, 400, 'INVALID_PAYLOAD'],
       ['another currency', { currency: 'USD' }, 422, 'CURRENCY_MISMATCH'],
     ])('rejects %s', async (_, options, status, failureCode) => {
       const wallet = await createWallet(app.url);

@@ -40,7 +40,8 @@ export async function startInstances(count: number): Promise<Instance[]> {
   return instances;
 }
 
-export async function stopInstances(instances: readonly Instance[]): Promise<void> {
+export async function stopInstances(instances: readonly Instance[] | undefined): Promise<void> {
+  if (!instances) return;
   for (const instance of instances) instance.process.kill();
   await Promise.all(instances.map((instance) => instance.process.exited));
 }

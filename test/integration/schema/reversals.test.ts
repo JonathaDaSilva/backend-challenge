@@ -32,14 +32,14 @@ describe('wager_transaction_reversals', () => {
     await fx.link(rollback, refund, 'ROLLBACK');
   });
 
-  test('a reference is reversed at most once per kind', async () => {
+  test('a reference is reversed at most once, whatever the kind', async () => {
     const first = await fx.reversalOf(bet, wallet, 'REFUND');
     await fx.link(first, bet, 'REFUND');
     const second = await fx.reversalOf(bet, wallet, 'REFUND');
-    await expectViolation(fx.link(second, bet, 'REFUND'), '23505', 'wager_tx_reversals_single_uq');
+    await expectViolation(fx.link(second, bet, 'REFUND'), '23505', 'wager_tx_reversals_reference_uq');
 
     const rollback = await fx.reversalOf(bet, wallet, 'ROLLBACK');
-    await fx.link(rollback, bet, 'ROLLBACK');
+    await expectViolation(fx.link(rollback, bet, 'ROLLBACK'), '23505', 'wager_tx_reversals_reference_uq');
   });
 
   test('a reversal reverses a single transaction', async () => {

@@ -45,14 +45,6 @@ export class WalletCurrencyMismatchError extends ApplicationError {
   }
 }
 
-export class UnsupportedKindError extends ApplicationError {
-  readonly code = 'NOT_SUPPORTED';
-
-  constructor(readonly kind: string) {
-    super(`${kind} is not supported yet`);
-  }
-}
-
 export class TransactionNotFoundError extends ApplicationError {
   readonly code = 'TRANSACTION_NOT_FOUND';
 }

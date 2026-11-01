@@ -3,20 +3,17 @@ import type { IdGenerator } from '../../../shared/application/id-generator';
 import type { TransactionRunner } from '../../../shared/application/transaction-runner';
 import type { Money } from '../../../shared/domain/money';
 import { WalletNotFoundError } from '../../wallet/application/errors';
-import type { LedgerRepository, WalletRepository } from '../../wallet/application/ports';
-import { InsufficientFundsError } from '../../wallet/domain/errors';
-import type { Wallet } from '../../wallet/domain/wallet';
-import { LedgerDirection, type WalletLedgerEntry } from '../../wallet/domain/wallet-ledger-entry';
-import { WagerTransaction, WagerTransactionKind } from '../domain/wager-transaction';
+import type { WalletRepository } from '../../wallet/application/ports';
+import { WagerTransaction, type WagerTransactionKind } from '../domain/wager-transaction';
 import {
   DuplicateIdempotencyKeyError,
   IdempotencyConflictError,
-  UnsupportedKindError,
   WalletCurrencyMismatchError,
   WalletPlayerMismatchError,
 } from './errors';
 import { wagerPayloadHash } from './payload-hash';
 import type { WagerTransactionRepository } from './ports';
+import type { WagerProcessor } from './wager-processor';
 
 export interface SubmitWagerTransactionCommand {
   readonly idempotencyKey: string;
@@ -38,25 +35,17 @@ export interface SubmitWagerTransactionResult {
 
 export interface SubmitWagerTransactionDependencies {
   readonly wallets: WalletRepository;
-  readonly ledger: LedgerRepository;
   readonly transactions: WagerTransactionRepository;
+  readonly processor: WagerProcessor;
   readonly runner: TransactionRunner;
   readonly ids: IdGenerator;
   readonly clock: Clock;
 }
 
-const SUPPORTED_KINDS = new Set([WagerTransactionKind.Bet, WagerTransactionKind.Win, WagerTransactionKind.Loss]);
-
-export const FailureCodes = {
-  InsufficientFunds: 'INSUFFICIENT_FUNDS',
-} as const;
-
 export class SubmitWagerTransactionUseCase {
   constructor(private readonly deps: SubmitWagerTransactionDependencies) {}
 
   async execute(command: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
-    if (!SUPPORTED_KINDS.has(command.kind)) throw new UnsupportedKindError(command.kind);
-
     const payloadHash = wagerPayloadHash({ ...command, money: command.money.toJSON() });
 
     try {
@@ -70,7 +59,7 @@ export class SubmitWagerTransactionUseCase {
   }
 
   private async submit(command: SubmitWagerTransactionCommand, payloadHash: string) {
-    const { wallets, transactions, ids, clock } = this.deps;
+    const { wallets, transactions, processor, ids, clock } = this.deps;
 
     const wallet = await wallets.findByIdForUpdate(command.walletId);
     if (!wallet) throw new WalletNotFoundError(command.walletId);
@@ -85,36 +74,12 @@ export class SubmitWagerTransactionUseCase {
 
     const at = clock.now();
     const transaction = WagerTransaction.create({ ...command, id: ids.next(), payloadHash, at });
-
-    if (transaction.affectsBalance()) {
-      await this.applyMovement(wallet, transaction, at);
-    } else {
-      transaction.markProcessed(undefined, at, wallet.balance);
-      await transactions.insert(transaction);
-    }
+    const expectedVersion = wallet.version;
+    const decision = await processor.decide(transaction, wallet, at);
+    await processor.persistNew(transaction, wallet, expectedVersion, decision, at);
+    await processor.resolveDependents(transaction, wallet, at);
 
     return { transaction, idempotentReplay: false };
-  }
-
-  private async applyMovement(wallet: Wallet, transaction: WagerTransaction, at: Date): Promise<void> {
-    const expectedVersion = wallet.version;
-    const movement = { entryId: this.deps.ids.next(), transactionId: transaction.id, money: transaction.money, at };
-
-    let entry: WalletLedgerEntry;
-    try {
-      entry =
-        transaction.ledgerDirectionFor() === LedgerDirection.Debit ? wallet.debit(movement) : wallet.credit(movement);
-    } catch (error) {
-      if (!(error instanceof InsufficientFundsError)) throw error;
-      transaction.reject(FailureCodes.InsufficientFunds, wallet.balance);
-      await this.deps.transactions.insert(transaction);
-      return;
-    }
-
-    transaction.markProcessed(undefined, at, wallet.balance);
-    await this.deps.transactions.insert(transaction);
-    await this.deps.wallets.saveBalance(wallet, expectedVersion);
-    await this.deps.ledger.append(entry);
   }
 
   private replay(existing: WagerTransaction, idempotencyKey: string, payloadHash: string): SubmitWagerTransactionResult {
