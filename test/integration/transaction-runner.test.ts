@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import type { EntityManager, MikroORM } from '@mikro-orm/postgresql';
 import { MikroOrmTransactionRunner } from '../../src/shared/infrastructure/database/mikro-orm-transaction-runner';
-import { initTestOrm } from './support/database';
+import { initOwnerOrm, initTestOrm } from './support/database';
 
+let owner: MikroORM;
 let orm: MikroORM;
 let runner: MikroOrmTransactionRunner;
 
@@ -26,21 +27,24 @@ async function ids(): Promise<string[]> {
 }
 
 beforeAll(async () => {
+  owner = await initOwnerOrm();
+  await owner.em
+    .fork()
+    .execute('create table if not exists tx_probe (id text primary key, value numeric(20,2) not null)');
+  await owner.em.fork().execute('grant select, insert, update on tx_probe to wallet_app');
   orm = await initTestOrm();
   runner = new MikroOrmTransactionRunner(orm.em);
   repository = new ProbeRepository(orm.em);
-  await orm.em
-    .fork()
-    .execute('create table if not exists tx_probe (id text primary key, value numeric(20,2) not null)');
 });
 
 beforeEach(async () => {
-  await orm.em.fork().execute('truncate tx_probe');
+  await owner.em.fork().execute('truncate tx_probe');
 });
 
 afterAll(async () => {
-  await orm.em.fork().execute('drop table if exists tx_probe');
   await orm.close(true);
+  await owner.em.fork().execute('drop table if exists tx_probe');
+  await owner.close(true);
 });
 
 describe('MikroOrmTransactionRunner', () => {
