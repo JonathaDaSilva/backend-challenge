@@ -10,13 +10,6 @@ export interface TransactionRetryOptions {
 
 const DEFAULT_RETRY: TransactionRetryOptions = { maxAttempts: 3, baseDelayMs: 20 };
 
-/**
- * em.transactional() stores the transactional fork in an AsyncLocalStorage
- * (TransactionContext), so repositories holding the global EntityManager
- * resolve to it automatically through em.execute(), query builders and
- * getKysely(). em.getConnection().execute() bypasses that context and must not
- * be used for writes inside a unit of work.
- */
 export class MikroOrmTransactionRunner implements TransactionRunner {
   constructor(
     private readonly em: EntityManager,
@@ -24,10 +17,7 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
   ) {}
 
   async run<T>(work: () => Promise<T>): Promise<T> {
-    // A nested run joins the outer transaction. Retrying here would be useless:
-    // once PostgreSQL aborts a transaction, only the outermost run can restart it.
-    // getContext(false) skips the global-context guard: runs also start outside
-    // HTTP requests (SQS consumer, schedulers), where there is no RequestContext.
+    // getContext(false): o runner também roda fora de requests HTTP (consumer SQS, workers).
     if (this.em.getContext(false).isInTransaction()) {
       return this.em.transactional(() => work(), { propagation: TransactionPropagation.REQUIRED });
     }
@@ -44,7 +34,6 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
     }
   }
 
-  // Exponential backoff with full jitter, so colliding transactions do not retry in lockstep.
   private backoff(attempt: number): number {
     return Math.random() * this.retry.baseDelayMs * 2 ** (attempt - 1);
   }

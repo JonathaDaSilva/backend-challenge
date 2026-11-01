@@ -1,7 +1,5 @@
 import { DeadlockException } from '@mikro-orm/core';
 
-// SQLSTATEs where retrying the whole transaction is safe and expected to succeed:
-// 40001 serialization_failure, 40P01 deadlock_detected.
 const RETRYABLE_SQLSTATES = new Set(['40001', '40P01']);
 
 export function isRetryableTransactionError(error: unknown): boolean {

@@ -6,8 +6,6 @@ import { initTestOrm } from './support/database';
 let orm: MikroORM;
 let runner: MikroOrmTransactionRunner;
 
-// Stands in for a real repository: it holds the global EntityManager and never
-// receives a transaction handle, exactly like the repositories from #04 onwards.
 class ProbeRepository {
   constructor(private readonly em: EntityManager) {}
 
@@ -61,10 +59,7 @@ describe('MikroOrmTransactionRunner', () => {
     expect(await ids()).toEqual([]);
   });
 
-  test('propagates the transaction to repositories through AsyncLocalStorage', async () => {
-    // em.execute() resolves the transactional fork from TransactionContext, while
-    // em.getConnection().execute() bypasses it and autocommits on its own. This is
-    // why repositories must never write through the raw connection.
+  test('repositories join the transaction via AsyncLocalStorage; the raw connection bypasses it', async () => {
     await runner
       .run(async () => {
         await repository.insert('joined');
@@ -91,8 +86,6 @@ describe('MikroOrmTransactionRunner', () => {
   test('SELECT FOR UPDATE serializes concurrent debits on the same row', async () => {
     await orm.em.fork().execute("insert into tx_probe (id, value) values ('wallet', 100.00)");
 
-    // Two concurrent 80.00 debits against 100.00: the check runs under the row
-    // lock, so the second debit sees the result of the first one.
     const debit = () =>
       runner.run(async () => {
         const [row] = await orm.em.execute<{ enough: boolean }[]>(
@@ -156,7 +149,6 @@ describe('MikroOrmTransactionRunner', () => {
       const yLocked = Promise.withResolvers<void>();
       let attempts = 0;
 
-      // Opposite lock order: PostgreSQL aborts one side with 40P01 and the runner retries it.
       const first = runner.run(async () => {
         attempts++;
         await repository.lock('x');
