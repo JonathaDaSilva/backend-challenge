@@ -15,10 +15,23 @@ function port(name: string, fallback: string): number {
   return value;
 }
 
+function currencyList(name: string, fallback: string): readonly string[] {
+  const codes = required(name, fallback)
+    .split(',')
+    .map((code) => code.trim())
+    .filter((code) => code !== '');
+  const invalid = codes.filter((code) => !/^[A-Z]{3}$/.test(code));
+  if (codes.length === 0 || invalid.length > 0) {
+    throw new Error(`Invalid currency list in ${name}: ${invalid.join(', ') || '(empty)'}`);
+  }
+  return codes;
+}
+
 export interface AppConfig {
   readonly port: number;
   readonly databaseUrl: string;
   readonly migrationDatabaseUrl: string;
+  readonly supportedCurrencies: readonly string[];
   readonly aws: {
     readonly region: string;
     readonly endpoint: string;
@@ -36,6 +49,7 @@ export function loadConfig(): AppConfig {
     port: port('PORT', '3000'),
     databaseUrl: required('DATABASE_URL', 'postgres://wallet_app:wallet_app@localhost:5432/wallet'),
     migrationDatabaseUrl: required('MIGRATION_DATABASE_URL', 'postgres://wallet:wallet@localhost:5432/wallet'),
+    supportedCurrencies: currencyList('SUPPORTED_CURRENCIES', 'BRL'),
     aws: {
       region: required('AWS_REGION', 'us-east-1'),
       endpoint: required('AWS_ENDPOINT_URL', 'http://localhost:4566'),

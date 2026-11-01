@@ -192,6 +192,43 @@ O `wallet_app` é criado por `docker/postgres/init/01-app-role.sql`, que roda s�
 
 Os testes em `test/integration/schema/` provam cada linha da tabela de invariantes, verificando o SQLSTATE e o nome da constraint.
 
+## Wallet
+
+`src/modules/wallet/domain/wallet.ts` (aggregate root) e `wallet-ledger-entry.ts`.
+
+- **`credit` e `debit` devolvem o `WalletLedgerEntry`** já com `balanceBefore`, `balanceAfter` e `walletVersion` calculados. Não existe caminho que mude o saldo sem produzir o lançamento correspondente, e o repositório só persiste os dois.
+- **Saldo insuficiente** lança `InsufficientFundsError`, e o estado não muda. O agregado não sabe qual operação o chamou: é o use case que traduz o erro para o `failureCode`, que é diferente para um BET e para uma reversão (regra 9, #08/#09).
+- **`version`** começa em 1 e só incrementa em `credit` ou `debit`. Cada versão acima de 1 tem exatamente um lançamento, o que a `wallet_ledger_wallet_version_uq` do banco reforça.
+- **`Wallet.open`** devolve `{ wallet, openingEntry }`:
+  - com saldo inicial maior que zero, aplica um `credit` interno (OPENING: `0.00 → inicial`, versão 1);
+  - com saldo zero, não cria lançamento e a versão já é 1.
+- **Ids e datas chegam de fora**, pelos ports `IdGenerator` (UUIDv7) e `Clock` da aplicação. O domínio não gera UUID nem lê o relógio.
+- **`WalletLedgerEntry.create`** valida a conta, valor positivo, saldos não negativos e versão ≥ 1. `rehydrate` não revalida nada (§6.0).
+
+### `POST /wallets`
+
+Wallet, transação `OPENING` (PROCESSED, sem campos de provedor) e lançamento `CREDIT` entram num único `TransactionRunner.run`. Um teste força falha na escrita do ledger e confere que não sobra wallet nem OPENING.
+
+- **Conflito:** quem detecta a duplicata é o banco, por `wallets_player_currency_uq`, que o repositório traduz para `WalletAlreadyExistsError`. Não há checagem prévia, que teria corrida. O id da wallet existente é buscado **depois** do rollback (a transação original já está abortada) e vai no corpo do 409: um cliente que reenviou por timeout segue sem uma consulta extra. Um teste com 8 criações simultâneas para o mesmo player confirma um único 201.
+- **Moedas:** `SUPPORTED_CURRENCIES` (lista separada por vírgula, padrão `BRL`). O modelo continua multi-moeda; só a abertura de wallet é restrita.
+
+### Validação de entrada
+
+O formato do payload é validado com **zod** em `presentation/`. O schema é um valor comum, então os mesmos schemas validam a mensagem SQS (#11). O `amount` e a `currency` passam pelo zod como `unknown` e são validados por `Money.fromInput`, para que o erro carregue o `reason` do `Money` (`NOT_A_STRING`, `INVALID_FORMAT`…) em vez de uma mensagem genérica.
+
+### Erros HTTP (primeira versão; a taxonomia completa é a #10)
+
+Um `ExceptionFilter` global (`src/shared/presentation/error.filter.ts`) responde sempre `{ failureCode, message, ...detalhes }`:
+
+| Situação | Status | `failureCode` |
+|---|---|---|
+| Payload inválido (zod, `Money`, JSON malformado) | 400 | `INVALID_PAYLOAD` (+ `issues` ou `reason`) |
+| Wallet inexistente | 404 | `WALLET_NOT_FOUND` |
+| Wallet duplicada | 409 | `WALLET_ALREADY_EXISTS` (+ `walletId`) |
+| Moeda não suportada | 422 | `UNSUPPORTED_CURRENCY` (+ `supportedCurrencies`) |
+| Dependência indisponível (health) | 503 | `SERVICE_UNAVAILABLE` |
+| Erro inesperado | 500 | `INTERNAL_ERROR` (sem detalhes; stack só no log) |
+
 ## Pendente (próximas issues)
 
 Concorrência (#06), idempotência (#07), taxonomia de erros (#10), inbox/outbox (#11, #12), autenticação (#17).
