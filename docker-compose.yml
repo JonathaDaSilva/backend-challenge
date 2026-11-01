@@ -1,0 +1,39 @@
+name: backend-challenge
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet
+      POSTGRES_DB: wallet
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet -d wallet"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # MiniStack instead of LocalStack: current LocalStack images require a paid
+  # LOCALSTACK_AUTH_TOKEN. MiniStack is MIT, API-compatible and runs ready.d scripts.
+  sqs:
+    image: ministackorg/ministack:1.5.30
+    environment:
+      LOG_LEVEL: WARNING
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./docker/sqs/init/ready.d:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      # /_ministack/ready only reports "completed" after ready.d scripts finish,
+      # so `docker compose up --wait` returns with the queues already created.
+      test: ["CMD-SHELL", "python3 -c \"import json,urllib.request as r; s=json.load(r.urlopen('http://localhost:4566/_ministack/ready')); exit(0 if s['status']=='completed' and s['failed']==0 else 1)\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres-data:
