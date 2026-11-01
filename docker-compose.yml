@@ -17,8 +17,6 @@ services:
       timeout: 3s
       retries: 30
 
-  # MiniStack instead of LocalStack: current LocalStack images require a paid
-  # LOCALSTACK_AUTH_TOKEN. MiniStack is MIT, API-compatible and runs ready.d scripts.
   sqs:
     image: ministackorg/ministack:1.5.30
     environment:
@@ -28,8 +26,7 @@ services:
     volumes:
       - ./docker/sqs/init/ready.d:/etc/localstack/init/ready.d:ro
     healthcheck:
-      # /_ministack/ready only reports "completed" after ready.d scripts finish,
-      # so `docker compose up --wait` returns with the queues already created.
+      # /_ministack/ready só fica "completed" depois dos scripts de init: é isso que faz o --wait esperar as filas.
       test: ["CMD-SHELL", "python3 -c \"import json,urllib.request as r; s=json.load(r.urlopen('http://localhost:4566/_ministack/ready')); exit(0 if s['status']=='completed' and s['failed']==0 else 1)\""]
       interval: 2s
       timeout: 3s

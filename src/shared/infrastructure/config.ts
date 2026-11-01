@@ -30,7 +30,6 @@ export interface AppConfig {
   };
 }
 
-// Defaults match docker-compose.yml so a fresh clone runs without a .env file.
 export function loadConfig(): AppConfig {
   return {
     port: port('PORT', '3000'),

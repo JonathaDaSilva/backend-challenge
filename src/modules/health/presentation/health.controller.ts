@@ -15,7 +15,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-// Health endpoints are intentionally unauthenticated (README §2).
 @Controller('health')
 export class HealthController {
   constructor(

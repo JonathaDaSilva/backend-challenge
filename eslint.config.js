@@ -6,7 +6,6 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    // Domain layer must stay framework-free (README §6): no NestJS, no ORM, no infra.
     files: ['src/**/domain/**/*.ts'],
     rules: {
       'no-restricted-imports': [
