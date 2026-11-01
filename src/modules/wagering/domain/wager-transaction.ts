@@ -220,11 +220,12 @@ export class WagerTransaction {
     this._resultBalance = resultBalance;
   }
 
-  markPendingReference(): void {
+  markPendingReference(observedBalance: Money): void {
     if (this._status !== WagerTransactionStatus.Pending || !this.requiresReference()) {
       throw new InvalidTransactionStateError(`Cannot wait for a reference from ${this._status} (${this.kind})`);
     }
     this._status = WagerTransactionStatus.PendingReference;
+    this._resultBalance = observedBalance;
   }
 
   reject(code: string, resultBalance: Money | undefined): void {

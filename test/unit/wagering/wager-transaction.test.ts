@@ -96,13 +96,13 @@ describe('transitions', () => {
     const refund = WagerTransaction.create(
       props({ kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-0' }),
     );
-    refund.markPendingReference();
+    refund.markPendingReference(brl('100.00'));
     expect(refund.status).toBe(WagerTransactionStatus.PendingReference);
-    expect(() => refund.markPendingReference()).toThrow(InvalidTransactionStateError);
+    expect(() => refund.markPendingReference(brl('100.00'))).toThrow(InvalidTransactionStateError);
     refund.markProcessed('tx-0', at, brl('10.00'));
     expect(refund.referenceTransactionId).toBe('tx-0');
 
-    expect(() => WagerTransaction.create(props()).markPendingReference()).toThrow(InvalidTransactionStateError);
+    expect(() => WagerTransaction.create(props()).markPendingReference(brl('100.00'))).toThrow(InvalidTransactionStateError);
   });
 });
 
@@ -160,7 +160,7 @@ describe('checkReversalOf', () => {
     const pendingRefund = WagerTransaction.create(
       props({ id: 'ref', externalTransactionId: 'ext-ref', kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-0' }),
     );
-    pendingRefund.markPendingReference();
+    pendingRefund.markPendingReference(brl('100.00'));
     expect(reversal(WagerTransactionKind.Rollback).checkReversalOf(pendingRefund)).toBe('WAIT');
   });
 

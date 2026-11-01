@@ -40,7 +40,7 @@ export class WagerProcessor {
       );
       const check = reference ? transaction.checkReversalOf(reference) : 'WAIT';
       if (check === 'WAIT') {
-        if (transaction.status === WagerTransactionStatus.Pending) transaction.markPendingReference();
+        if (transaction.status === WagerTransactionStatus.Pending) transaction.markPendingReference(wallet.balance);
         return { pending: true };
       }
       if (check !== 'OK') {
