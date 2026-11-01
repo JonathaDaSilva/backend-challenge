@@ -7,9 +7,17 @@
     "start": "bun src/main.ts",
     "dev": "bun --watch src/main.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "db:migrate:up": "bun scripts/migrate.ts up",
+    "db:migrate:down": "bun scripts/migrate.ts down",
+    "db:migrate:create": "bun scripts/migrate.ts create",
+    "db:migrate:pending": "bun scripts/migrate.ts pending"
   },
   "dependencies": {
+    "@mikro-orm/core": "^7.2.6",
+    "@mikro-orm/migrations": "^7.2.6",
+    "@mikro-orm/nestjs": "^7.1.0",
+    "@mikro-orm/postgresql": "^7.2.6",
     "@nestjs/common": "^12.3.2",
     "@nestjs/core": "^12.3.2",
     "@nestjs/platform-express": "^12.3.2",
