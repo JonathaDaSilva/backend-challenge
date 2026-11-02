@@ -6,6 +6,8 @@ import { renderFailureTable, TABLE_END, TABLE_START } from '../../scripts/failur
 
 const EXPECTED_STATUS: Record<FailureCategory, (status: number) => boolean> = {
   VALIDATION: (status) => status >= 400 && status < 500 && status !== 404 && status !== 409 && status !== 422,
+  AUTHENTICATION: (status) => status === 401,
+  AUTHORIZATION: (status) => status === 403,
   NOT_FOUND: (status) => status === 404,
   CONFLICT: (status) => status === 409,
   BUSINESS_REJECTION: (status) => status === 422,

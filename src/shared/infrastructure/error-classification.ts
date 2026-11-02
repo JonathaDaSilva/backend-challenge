@@ -10,7 +10,13 @@ import {
 import { InvalidTransactionStateError, InvalidWagerTransactionError } from '../../modules/wagering/domain/errors';
 import { UnsupportedCurrencyError, WalletAlreadyExistsError, WalletNotFoundError } from '../../modules/wallet/application/errors';
 import { InsufficientFundsError, InvalidLedgerEntryError, InvalidMovementError } from '../../modules/wallet/domain/errors';
-import { ConcurrentModificationError, DuplicateMessageError, InvalidPayloadError } from '../application/errors';
+import {
+  ConcurrentModificationError,
+  DuplicateMessageError,
+  InvalidPayloadError,
+  ProviderMismatchError,
+  UnauthenticatedError,
+} from '../application/errors';
 import { type CatalogCode, type FailureDefinition, failureDefinition } from '../application/failure-catalog';
 import { CurrencyMismatchError, InvalidMoneyError } from '../domain/errors';
 import { isTransientDatabaseError } from './database/pg-errors';
@@ -43,6 +49,8 @@ export const ERROR_MAPPINGS: readonly ErrorMapping[] = [
   map(WalletPlayerMismatchError, 'WALLET_PLAYER_MISMATCH'),
   map(WalletCurrencyMismatchError, 'CURRENCY_MISMATCH'),
   map(ConcurrentModificationError, 'TRANSIENT_FAILURE'),
+  map(UnauthenticatedError, 'UNAUTHENTICATED'),
+  map(ProviderMismatchError, 'PROVIDER_MISMATCH'),
 ];
 
 // Erros que nunca deveriam chegar à borda: são capturados antes ou indicam bug. Viram INTERNAL_ERROR.

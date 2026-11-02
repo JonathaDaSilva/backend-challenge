@@ -1,5 +1,5 @@
 import { type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { HealthModule } from './modules/health/health.module';
 import { WageringModule } from './modules/wagering/wagering.module';
@@ -9,6 +9,8 @@ import { PersistenceModule } from './shared/infrastructure/database/persistence.
 import { InfrastructureModule } from './shared/infrastructure/infrastructure.module';
 import { OutboxModule } from './shared/infrastructure/outbox.module';
 import { AccessLogMiddleware } from './shared/presentation/access-log.middleware';
+import { AuthGuard } from './shared/presentation/auth/auth.guard';
+import { AUTHENTICATOR, NoopAuthenticator } from './shared/presentation/auth/authenticator';
 import { CorrelationMiddleware } from './shared/presentation/correlation.middleware';
 import { ErrorFilter } from './shared/presentation/error.filter';
 import { JsonContentTypeMiddleware } from './shared/presentation/json-content-type.middleware';
@@ -25,7 +27,11 @@ import { JsonContentTypeMiddleware } from './shared/presentation/json-content-ty
     WalletModule,
     WageringModule,
   ],
-  providers: [{ provide: APP_FILTER, useClass: ErrorFilter }],
+  providers: [
+    { provide: APP_FILTER, useClass: ErrorFilter },
+    { provide: AUTHENTICATOR, useClass: NoopAuthenticator },
+    { provide: APP_GUARD, useClass: AuthGuard },
+  ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {

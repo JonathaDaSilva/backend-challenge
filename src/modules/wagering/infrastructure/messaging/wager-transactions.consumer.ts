@@ -142,6 +142,8 @@ export class WagerTransactionsConsumer {
         case 'BUSINESS_REJECTION':
         case 'CONFLICT':
         case 'NOT_FOUND':
+        case 'AUTHENTICATION':
+        case 'AUTHORIZATION':
           this.logger.log(`message ${parsed.messageId} rejected: ${code}`);
           return this.ack(message);
         case 'VALIDATION':

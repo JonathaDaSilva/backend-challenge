@@ -3,6 +3,7 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import { GetQueueUrlCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import type { AppConfig } from '../../../shared/infrastructure/config';
 import { LifecycleState } from '../../../shared/infrastructure/lifecycle-state';
+import { Public } from '../../../shared/presentation/auth/auth.guard';
 import { APP_CONFIG, SQS_CLIENT } from '../../../shared/infrastructure/tokens';
 
 type CheckStatus = 'up' | 'down';
@@ -16,6 +17,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+@Public()
 @Controller('health')
 export class HealthController {
   constructor(

@@ -380,6 +380,8 @@ Além disso, um teste de contrato (`test/integration/error-contract.test.ts`) pr
 | `INVALID_PAYLOAD` | VALIDATION | 400 | não | Payload, header ou parâmetro da URL malformado; corrija antes de reenviar |
 | `PAYLOAD_TOO_LARGE` | VALIDATION | 413 | não | Corpo da requisição maior que o limite aceito |
 | `UNSUPPORTED_MEDIA_TYPE` | VALIDATION | 415 | não | O corpo precisa ser application/json |
+| `UNAUTHENTICATED` | AUTHENTICATION | 401 | não | Credenciais ausentes ou inválidas (só com um IdP ligado) |
+| `PROVIDER_MISMATCH` | AUTHORIZATION | 403 | não | As credenciais não autorizam o providerId do corpo (só com um IdP ligado) |
 | `NOT_FOUND` | NOT_FOUND | 404 | não | A rota não existe |
 | `WALLET_NOT_FOUND` | NOT_FOUND | 404 | não | A wallet da URL não existe |
 | `TRANSACTION_NOT_FOUND` | NOT_FOUND | 404 | não | A transação da URL não existe |

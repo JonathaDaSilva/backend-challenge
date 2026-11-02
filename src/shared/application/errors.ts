@@ -20,6 +20,21 @@ export class DuplicateMessageError extends ApplicationError {
   readonly code = 'DUPLICATE_MESSAGE';
 }
 
+export class UnauthenticatedError extends ApplicationError {
+  readonly code = 'UNAUTHENTICATED';
+}
+
+export class ProviderMismatchError extends ApplicationError {
+  readonly code = 'PROVIDER_MISMATCH';
+
+  constructor(
+    readonly authorizedProviderId: string,
+    readonly requestedProviderId: string,
+  ) {
+    super(`Credentials for ${authorizedProviderId} cannot submit transactions for ${requestedProviderId}`);
+  }
+}
+
 export class InvalidPayloadError extends ApplicationError {
   readonly code = 'INVALID_PAYLOAD';
 

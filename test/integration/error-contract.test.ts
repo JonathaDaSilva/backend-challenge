@@ -5,6 +5,7 @@ import { type CatalogCode, FAILURE_CATALOG } from '../../src/shared/application/
 import { loadConfig } from '../../src/shared/infrastructure/config';
 import { createSqsClient } from '../../src/shared/infrastructure/sqs/sqs.client';
 import { SQS_CLIENT } from '../../src/shared/infrastructure/tokens';
+import { AUTHENTICATOR, type Authenticator } from '../../src/shared/presentation/auth/authenticator';
 import { postJson, type StartedApp, startApp, withConfig } from './support/app';
 import { initTestDatabases, type TestDatabases } from './support/database';
 import { createWallet, submit, type SubmitOptions, type TestWallet } from './support/wagering';
@@ -152,6 +153,22 @@ const scenarios: Record<Exclude<CatalogCode, (typeof NOT_REACHABLE_OVER_HTTP)[nu
           .useValue(createSqsClient({ ...loadConfig().aws, endpoint: 'http://127.0.0.1:1' })),
       (broken) => fetch(`${broken.url}/health/ready`),
     ),
+  UNAUTHENTICATED: () =>
+    withBrokenApp(
+      (builder) =>
+        builder.overrideProvider(AUTHENTICATOR).useValue({ authenticate: async () => undefined } satisfies Authenticator),
+      (broken) => fetch(`${broken.url}/wallets/${Bun.randomUUIDv7()}`),
+    ),
+  PROVIDER_MISMATCH: async () => {
+    const wallet = await createWallet(app.url);
+    return withBrokenApp(
+      (builder) =>
+        builder
+          .overrideProvider(AUTHENTICATOR)
+          .useValue({ authenticate: async () => ({ subject: 's', providerId: 'provider-b' }) } satisfies Authenticator),
+      (broken) => submit(broken.url, wallet),
+    );
+  },
   INTERNAL_ERROR: () =>
     withBrokenApp(
       (builder) =>

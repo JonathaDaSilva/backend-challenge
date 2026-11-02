@@ -2,6 +2,8 @@ import type { FailureCode } from '../../modules/wagering/domain/failure-codes';
 
 export type FailureCategory =
   | 'VALIDATION'
+  | 'AUTHENTICATION'
+  | 'AUTHORIZATION'
   | 'NOT_FOUND'
   | 'CONFLICT'
   | 'BUSINESS_REJECTION'
@@ -25,6 +27,9 @@ export const FAILURE_CATALOG = {
   INVALID_PAYLOAD: define('VALIDATION', 400, false, 'Payload, header ou parâmetro da URL malformado; corrija antes de reenviar'),
   PAYLOAD_TOO_LARGE: define('VALIDATION', 413, false, 'Corpo da requisição maior que o limite aceito'),
   UNSUPPORTED_MEDIA_TYPE: define('VALIDATION', 415, false, 'O corpo precisa ser application/json'),
+
+  UNAUTHENTICATED: define('AUTHENTICATION', 401, false, 'Credenciais ausentes ou inválidas (só com um IdP ligado)'),
+  PROVIDER_MISMATCH: define('AUTHORIZATION', 403, false, 'As credenciais não autorizam o providerId do corpo (só com um IdP ligado)'),
 
   NOT_FOUND: define('NOT_FOUND', 404, false, 'A rota não existe'),
   WALLET_NOT_FOUND: define('NOT_FOUND', 404, false, 'A wallet da URL não existe'),
