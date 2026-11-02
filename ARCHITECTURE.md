@@ -522,6 +522,28 @@ COMMIT
   - um destino fora do ar reagenda com backoff e publica depois;
   - a republicação do mesmo `eventId` é colapsada.
 
+## Ledger paginado e reconciliação
+
+### `GET /wallets/:walletId/ledger?cursor=…&limit=50`
+
+- **Paginação por chave (keyset) em `seq`**, do mais recente para o mais antigo: `WHERE wallet_id = ? AND seq < :cursor ORDER BY seq DESC LIMIT n+1`. O `+1` diz se há próxima página sem `COUNT`. O índice `wallet_ledger_cursor_idx (wallet_id, seq)` atende a consulta.
+- **Por que é estável:** o `offset` desloca as páginas a cada escrita nova. Aqui, a página seguinte é sempre "o que vem antes do último item visto", então linhas novas (mais recentes) não aparecem nas páginas seguintes nem empurram nada. Pela mesma razão, um `seq` menor nunca é commitado depois de um maior **na mesma wallet**: toda escrita no ledger passa pelo lock da wallet (#06), e a ordem de alocação do `seq` acompanha a ordem dos commits. Os buracos no `seq` (linhas de outras wallets) não importam para a paginação.
+- **Cursor opaco e versionado:** base64url de `{"v":1,"before":"<seq>"}`. O `v` permite mudar o formato sem quebrar quem guardou um cursor. Um cursor malformado, de outra versão ou com posição inválida responde 400 `INVALID_PAYLOAD` (`path: cursor`).
+- **`limit`:** padrão 50, de 1 a 200. Cada lançamento traz o `kind` da transação (via join), e `nextCursor` é `null` na última página.
+
+### `POST /wallets/:walletId/reconciliation`
+
+- **Verificação:** saldo armazenado em `wallets` contra créditos − débitos do ledger. A resposta segue o contrato (`storedBalance`, `calculatedBalance`, `difference`, `consistent`, `checkedEntries`) e acrescenta `reconciliationId` e `checkedAt`. Responde 200 também quando há divergência: a reconciliação é um relatório que rodou com sucesso, e a divergência é o conteúdo.
+- **Leitura em snapshot:** a wallet e a soma do ledger são lidas na mesma transação `REPEATABLE READ READ ONLY` (opção `snapshot` do `TransactionRunner`). As duas consultas veem a mesma foto, então uma aposta que comita entre elas não gera divergência falsa, e nenhuma aposta é bloqueada (ao contrário de um `FOR SHARE` na wallet). Um teste roda 15 reconciliações junto com 40 apostas, e todas saem consistentes.
+- **Divergência nunca corrigida em silêncio:**
+  - **log** `warn` estruturado, com wallet, saldos, diferença e número de lançamentos;
+  - **métrica** `wallet_reconciliation_divergences_total{currency}`;
+  - **resposta** `consistent: false`;
+  - **registro** em `wallet_reconciliations`.
+  A wallet não é tocada.
+- **`wallet_reconciliations`:** guarda cada execução, consistente ou não. É append-only, como o ledger: trigger `forbid_mutation` e grant só de `SELECT, INSERT` para o `wallet_app`. CHECKs garantem `difference = stored − calculated` e `consistent ⇔ difference = 0`. Uma divergência fica registrada no banco, e não só num log que pode girar.
+- **Métricas e log como ports:** `Metrics` e `StructuredLogger` (`src/shared/application/observability.ts`) têm por enquanto implementação em memória e via Logger do Nest. A #14 troca as implementações (logs JSON, exposição de métricas) sem mexer em quem chama.
+
 ## Pendente (próximas issues)
 
 Autenticação (#17).
