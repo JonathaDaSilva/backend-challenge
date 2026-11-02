@@ -1,5 +1,6 @@
 import {
   CreateQueueCommand,
+  DeleteMessageCommand,
   DeleteQueueCommand,
   GetQueueAttributesCommand,
   type Message,
@@ -163,4 +164,52 @@ export async function waitFor<T>(
     if (done(value) || Date.now() > deadline) return value;
     await Bun.sleep(100);
   }
+}
+
+export interface EventsQueue {
+  readonly sqs: SQSClient;
+  readonly queueName: string;
+  readonly queueUrl: string;
+  dispose(): Promise<void>;
+}
+
+export async function createEventsQueue(): Promise<EventsQueue> {
+  const sqs = createSqsClient(loadConfig().aws);
+  const queueName = `test-events-${Bun.randomUUIDv7().slice(-12)}.fifo`;
+  const { QueueUrl = '' } = await sqs.send(
+    new CreateQueueCommand({ QueueName: queueName, Attributes: { FifoQueue: 'true', ContentBasedDeduplication: 'false' } }),
+  );
+  return {
+    sqs,
+    queueName,
+    queueUrl: QueueUrl,
+    async dispose() {
+      await sqs.send(new DeleteQueueCommand({ QueueUrl })).catch(() => undefined);
+      sqs.destroy();
+    },
+  };
+}
+
+export interface PublishedEvent {
+  readonly eventId: string;
+  readonly eventType: string;
+  readonly aggregateId: string;
+  readonly correlationId: string;
+  readonly causationId?: string;
+  readonly data: Record<string, unknown>;
+}
+
+export async function receiveEvents(queue: EventsQueue, expected: number, timeoutMs = 10_000): Promise<PublishedEvent[]> {
+  const events: PublishedEvent[] = [];
+  const deadline = Date.now() + timeoutMs;
+  while (events.length < expected && Date.now() < deadline) {
+    const { Messages = [] } = await queue.sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: queue.queueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1 }),
+    );
+    for (const message of Messages) {
+      events.push(JSON.parse(message.Body ?? '{}') as PublishedEvent);
+      await queue.sqs.send(new DeleteMessageCommand({ QueueUrl: queue.queueUrl, ReceiptHandle: message.ReceiptHandle }));
+    }
+  }
+  return events;
 }

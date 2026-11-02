@@ -19,13 +19,13 @@ async function waitUntilReady(url: string, process: Subprocess, timeoutMs: numbe
   throw new Error(`instance at ${url} was not ready after ${timeoutMs}ms`);
 }
 
-export async function startInstances(count: number): Promise<Instance[]> {
+export async function startInstances(count: number, env: Record<string, string> = {}): Promise<Instance[]> {
   const basePort = 39_000 + Math.floor(Math.random() * 500) * 2;
   const instances = Array.from({ length: count }, (_, index) => {
     const port = basePort + index;
     const process = Bun.spawn({
       cmd: [Bun.argv[0] ?? 'bun', 'src/main.ts'],
-      env: { ...Bun.env, PORT: String(port) },
+      env: { ...Bun.env, ...env, PORT: String(port) },
       stdout: 'ignore',
       stderr: 'ignore',
     });

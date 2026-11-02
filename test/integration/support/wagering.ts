@@ -1,17 +1,21 @@
 import { expect } from 'bun:test';
 import type { MikroORM } from '@mikro-orm/postgresql';
-import { postJson } from './app';
 
 export interface TestWallet {
   readonly walletId: string;
   readonly playerId: string;
 }
 
-export async function createWallet(baseUrl: string, amount = '100.00'): Promise<TestWallet> {
+export async function createWallet(
+  baseUrl: string,
+  amount = '100.00',
+  headers: Record<string, string> = {},
+): Promise<TestWallet> {
   const playerId = Bun.randomUUIDv7();
-  const response = await postJson(`${baseUrl}/wallets`, {
-    playerId,
-    initialBalance: { amount, currency: 'BRL' },
+  const response = await fetch(`${baseUrl}/wallets`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify({ playerId, initialBalance: { amount, currency: 'BRL' } }),
   });
   expect(response.status).toBe(201);
   const body = (await response.json()) as { id: string };
@@ -25,6 +29,7 @@ export interface SubmitOptions {
   readonly externalTransactionId?: string;
   readonly idempotencyKey?: string | null;
   readonly body?: Record<string, unknown>;
+  readonly headers?: Record<string, string>;
 }
 
 export function wagerBody(wallet: TestWallet, options: SubmitOptions = {}) {
@@ -51,6 +56,7 @@ export function submit(baseUrl: string, wallet: TestWallet, options: SubmitOptio
     headers: {
       'content-type': 'application/json',
       ...(idempotencyKey === null ? {} : { 'idempotency-key': idempotencyKey }),
+      ...options.headers,
     },
     body: JSON.stringify(body),
   });
