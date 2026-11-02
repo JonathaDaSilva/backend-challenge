@@ -62,6 +62,14 @@ export interface AppConfig {
   readonly sqs: {
     readonly wagerQueue: string;
     readonly wagerDlq: string;
+    readonly consumerEnabled: boolean;
+    readonly maxAttempts: number;
+    readonly backoffBaseMs: number;
+    readonly backoffMaxMs: number;
+    readonly visibilityTimeoutSeconds: number;
+    readonly waitTimeSeconds: number;
+    readonly batchSize: number;
+    readonly shutdownGraceMs: number;
   };
 }
 
@@ -92,6 +100,14 @@ export function loadConfig(): AppConfig {
     sqs: {
       wagerQueue: required('SQS_WAGER_QUEUE', 'wager-transactions.fifo'),
       wagerDlq: required('SQS_WAGER_DLQ', 'wager-transactions-dlq.fifo'),
+      consumerEnabled: required('SQS_CONSUMER_ENABLED', 'true') !== 'false',
+      maxAttempts: positiveInt('SQS_MAX_ATTEMPTS', '7'),
+      backoffBaseMs: positiveInt('SQS_BACKOFF_BASE_MS', '2000'),
+      backoffMaxMs: positiveInt('SQS_BACKOFF_MAX_MS', '60000'),
+      visibilityTimeoutSeconds: positiveInt('SQS_VISIBILITY_TIMEOUT_SECONDS', '30'),
+      waitTimeSeconds: positiveInt('SQS_WAIT_TIME_SECONDS', '20'),
+      batchSize: positiveInt('SQS_BATCH_SIZE', '10'),
+      shutdownGraceMs: positiveInt('SQS_SHUTDOWN_GRACE_MS', '10000'),
     },
   };
 }

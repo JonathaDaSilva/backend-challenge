@@ -3,7 +3,7 @@ set -euo pipefail
 
 MAIN_QUEUE="wager-transactions.fifo"
 DLQ="wager-transactions-dlq.fifo"
-MAX_RECEIVE_COUNT=5
+MAX_RECEIVE_COUNT=8
 
 awslocal sqs create-queue --queue-name "$DLQ" \
   --attributes FifoQueue=true,ContentBasedDeduplication=false >/dev/null

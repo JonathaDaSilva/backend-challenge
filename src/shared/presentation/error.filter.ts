@@ -1,66 +1,12 @@
 import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, Logger } from '@nestjs/common';
-import {
-  DuplicateExternalTransactionError,
-  DuplicateIdempotencyKeyError,
-  IdempotencyConflictError,
-  TransactionNotFoundError,
-  UnknownWalletError,
-  WalletCurrencyMismatchError,
-  WalletPlayerMismatchError,
-} from '../../modules/wagering/application/errors';
-import { InvalidTransactionStateError, InvalidWagerTransactionError } from '../../modules/wagering/domain/errors';
-import { UnsupportedCurrencyError, WalletAlreadyExistsError, WalletNotFoundError } from '../../modules/wallet/application/errors';
-import { InsufficientFundsError, InvalidLedgerEntryError, InvalidMovementError } from '../../modules/wallet/domain/errors';
-import { ConcurrentModificationError, InvalidPayloadError } from '../application/errors';
 import { type CatalogCode, failureDefinition } from '../application/failure-catalog';
-import { CurrencyMismatchError, InvalidMoneyError } from '../domain/errors';
-import { isTransientDatabaseError } from '../infrastructure/database/pg-errors';
+import { classifyError } from '../infrastructure/error-classification';
 
 interface HttpResponse {
   status(code: number): HttpResponse;
   setHeader(name: string, value: string): void;
   json(body: unknown): void;
 }
-
-type ErrorClass = abstract new (...args: never[]) => Error;
-
-interface ErrorMapping {
-  readonly type: ErrorClass;
-  readonly code: CatalogCode;
-  readonly extra: (error: never) => Record<string, unknown>;
-}
-
-const map = <E extends Error>(
-  type: abstract new (...args: never[]) => E,
-  code: CatalogCode,
-  extra: (error: E) => Record<string, unknown> = () => ({}),
-): ErrorMapping => ({ type, code, extra });
-
-export const ERROR_MAPPINGS: readonly ErrorMapping[] = [
-  map(InvalidPayloadError, 'INVALID_PAYLOAD', (e) => ({ issues: e.issues })),
-  map(InvalidMoneyError, 'INVALID_PAYLOAD', (e) => ({ reason: e.reason })),
-  map(InvalidWagerTransactionError, 'INVALID_PAYLOAD', (e) => ({ reason: e.reason })),
-  map(WalletNotFoundError, 'WALLET_NOT_FOUND'),
-  map(TransactionNotFoundError, 'TRANSACTION_NOT_FOUND'),
-  map(WalletAlreadyExistsError, 'WALLET_ALREADY_EXISTS', (e) => ({ walletId: e.existingWalletId })),
-  map(IdempotencyConflictError, 'IDEMPOTENCY_CONFLICT', (e) => ({ transactionId: e.transactionId })),
-  map(DuplicateExternalTransactionError, 'DUPLICATE_EXTERNAL_TRANSACTION'),
-  map(UnsupportedCurrencyError, 'UNSUPPORTED_CURRENCY', (e) => ({ supportedCurrencies: e.supported })),
-  map(UnknownWalletError, 'UNKNOWN_WALLET'),
-  map(WalletPlayerMismatchError, 'WALLET_PLAYER_MISMATCH'),
-  map(WalletCurrencyMismatchError, 'CURRENCY_MISMATCH'),
-  map(ConcurrentModificationError, 'TRANSIENT_FAILURE'),
-];
-
-// Erros que nunca deveriam chegar à borda: são capturados antes ou indicam bug. Viram 500 INTERNAL_ERROR.
-export const INTERNAL_ERROR_TYPES: readonly ErrorClass[] = [
-  DuplicateIdempotencyKeyError,
-  InsufficientFundsError,
-  InvalidTransactionStateError,
-  InvalidMovementError,
-  InvalidLedgerEntryError,
-  CurrencyMismatchError,
-];
 
 const HTTP_EXCEPTION_CODES: Record<number, CatalogCode> = {
   400: 'INVALID_PAYLOAD',
@@ -94,15 +40,16 @@ function fromHttpException(error: HttpException): ErrorResponse {
 }
 
 export function toErrorResponse(error: unknown): ErrorResponse | undefined {
-  if (error instanceof Error) {
-    const mapping = ERROR_MAPPINGS.find((candidate) => error instanceof candidate.type);
-    if (mapping) return respond(mapping.code, error.message, (mapping.extra as (e: Error) => Record<string, unknown>)(error));
-  }
   if (error instanceof HttpException) return fromHttpException(error);
-  if (isTransientDatabaseError(error)) {
-    return respond('TRANSIENT_FAILURE', 'Temporary failure, the request can be retried');
-  }
-  return undefined;
+  const classified = classifyError(error);
+  if (!classified.known) return undefined;
+  const message =
+    classified.code === 'TRANSIENT_FAILURE'
+      ? 'Temporary failure, the request can be retried'
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  return respond(classified.code, message, classified.extra);
 }
 
 @Catch()

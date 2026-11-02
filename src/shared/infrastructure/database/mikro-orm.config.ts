@@ -5,12 +5,14 @@ import { WagerTransactionReversalRecordSchema } from '../../../modules/wagering/
 import { WalletLedgerEntryRecordSchema } from '../../../modules/wallet/infrastructure/persistence/wallet-ledger-entry.record';
 import { WalletRecordSchema } from '../../../modules/wallet/infrastructure/persistence/wallet.record';
 import { loadConfig } from '../config';
+import { InboxMessageRecordSchema } from './inbox.record';
 
 export const entities = [
   WalletRecordSchema,
   WalletLedgerEntryRecordSchema,
   WagerTransactionRecordSchema,
   WagerTransactionReversalRecordSchema,
+  InboxMessageRecordSchema,
 ];
 
 export function createMikroOrmConfig(databaseUrl = loadConfig().databaseUrl) {

@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { EntityManager } from '@mikro-orm/postgresql';
+import { INBOX_REPOSITORY } from '../../application/inbox';
 import { WAGER_TRANSACTION_REPOSITORY } from '../../../modules/wagering/application/ports';
 import { MikroOrmWagerTransactionRepository } from '../../../modules/wagering/infrastructure/persistence/mikro-orm-wager-transaction.repository';
 import { LEDGER_REPOSITORY, WALLET_REPOSITORY } from '../../../modules/wallet/application/ports';
@@ -7,6 +8,7 @@ import {
   MikroOrmLedgerRepository,
   MikroOrmWalletRepository,
 } from '../../../modules/wallet/infrastructure/persistence/mikro-orm-wallet.repository';
+import { MikroOrmInboxRepository } from './mikro-orm-inbox.repository';
 
 @Global()
 @Module({
@@ -26,7 +28,12 @@ import {
       inject: [EntityManager],
       useFactory: (em: EntityManager) => new MikroOrmWagerTransactionRepository(em),
     },
+    {
+      provide: INBOX_REPOSITORY,
+      inject: [EntityManager],
+      useFactory: (em: EntityManager) => new MikroOrmInboxRepository(em),
+    },
   ],
-  exports: [WALLET_REPOSITORY, LEDGER_REPOSITORY, WAGER_TRANSACTION_REPOSITORY],
+  exports: [WALLET_REPOSITORY, LEDGER_REPOSITORY, WAGER_TRANSACTION_REPOSITORY, INBOX_REPOSITORY],
 })
 export class PersistenceModule {}

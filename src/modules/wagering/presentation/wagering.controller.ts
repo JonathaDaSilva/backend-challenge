@@ -1,27 +1,14 @@
 import { Body, Controller, Get, Headers, Inject, Param, Post, Res } from '@nestjs/common';
 import { z } from 'zod';
-import { Money } from '../../../shared/domain/money';
 import { parseWith } from '../../../shared/presentation/validation';
 import { GetWagerTransactionUseCase } from '../application/get-wager-transaction.use-case';
 import { SubmitWagerTransactionUseCase } from '../application/submit-wager-transaction.use-case';
-import type { WagerTransactionKind } from '../domain/wager-transaction';
 import { httpStatusFor, type SubmitResponse, toSubmitResponse, toTransactionView } from './wager-transaction.view';
-
-const identifier = z.string().min(1).max(255);
+import { identifier, toSubmitCommand, WagerTransactionPayloadSchema } from './wager-transaction.schema';
 
 const SubmitWagerTransactionSchema = z.object({
   idempotencyKey: identifier,
-  body: z.object({
-    providerId: identifier,
-    externalTransactionId: identifier,
-    playerId: z.uuid(),
-    walletId: z.uuid(),
-    roundId: identifier,
-    gameId: identifier,
-    kind: z.enum(['BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK']),
-    money: z.object({ amount: z.unknown(), currency: z.unknown() }),
-    referenceExternalTransactionId: identifier.optional(),
-  }),
+  body: WagerTransactionPayloadSchema,
 });
 
 const TransactionParamsSchema = z.object({ transactionId: z.uuid() });
@@ -45,13 +32,9 @@ export class WageringController {
     @Res({ passthrough: true }) response: StatusSetter,
   ): Promise<SubmitResponse> {
     const input = parseWith(SubmitWagerTransactionSchema, { idempotencyKey, body });
-    const { transaction, idempotentReplay } = await this.submitTransaction.execute({
-      ...input.body,
-      idempotencyKey: input.idempotencyKey,
-      kind: input.body.kind as WagerTransactionKind,
-      money: Money.fromInput(input.body.money),
-      referenceExternalTransactionId: input.body.referenceExternalTransactionId,
-    });
+    const { transaction, idempotentReplay } = await this.submitTransaction.execute(
+      toSubmitCommand(input.body, input.idempotencyKey),
+    );
     response.status(httpStatusFor(transaction));
     return toSubmitResponse(transaction, idempotentReplay);
   }

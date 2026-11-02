@@ -16,6 +16,10 @@ export class ConcurrentModificationError extends ApplicationError {
   readonly code = 'CONCURRENT_MODIFICATION';
 }
 
+export class DuplicateMessageError extends ApplicationError {
+  readonly code = 'DUPLICATE_MESSAGE';
+}
+
 export class InvalidPayloadError extends ApplicationError {
   readonly code = 'INVALID_PAYLOAD';
 

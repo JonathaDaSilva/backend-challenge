@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { FailureCode } from '../../src/modules/wagering/domain/failure-codes';
 import { FAILURE_CATALOG, type FailureCategory, isCatalogCode } from '../../src/shared/application/failure-catalog';
-import { ERROR_MAPPINGS, INTERNAL_ERROR_TYPES } from '../../src/shared/presentation/error.filter';
+import { ERROR_MAPPINGS, INTERNAL_ERROR_TYPES } from '../../src/shared/infrastructure/error-classification';
 import { renderFailureTable, TABLE_END, TABLE_START } from '../../scripts/failure-catalog-table';
 
 const EXPECTED_STATUS: Record<FailureCategory, (status: number) => boolean> = {
