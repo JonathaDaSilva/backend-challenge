@@ -30,7 +30,7 @@ Sem `.env`, os padrões já apontam para os serviços do compose (veja `.env.exa
 |---|---|
 | `bun run dev` | API com reload automático |
 | `bun run start` | API |
-| `bun test` | todos os testes (exige o compose no ar) |
+| `bun test` | todos os testes (exige o compose no ar e a API parada) |
 | `bun run test` | só unitários |
 | `bun run test:integration` | integração com PostgreSQL e SQS reais |
 | `bun run test:concurrency` | concorrência e falha: 3 instâncias, crash antes do ack, publishers concorrentes, reinício |
@@ -95,6 +95,8 @@ Mensagens SQS em `wager-transactions.fifo` seguem o envelope `WagerTransactionRe
 | `AWS_REGION` · `AWS_ENDPOINT_URL` · `AWS_ACCESS_KEY_ID` · `AWS_SECRET_ACCESS_KEY` | `us-east-1` · `http://localhost:4566` · `test` · `test` | cliente SQS |
 
 ## Testes
+
+**Pare a API antes de rodar os testes:** ela disputa a outbox e as referências pendentes no mesmo banco, e os testes falham.
 
 Todos os testes de integração usam o PostgreSQL e a MiniStack reais do compose, sem mocks de banco ou de fila. Ao fim de cada execução, um hook global confere a invariante **saldo = ledger** em todas as wallets que os testes criaram. A tabela que liga cada exigência do §13 do desafio ao teste que a prova está em [`ARCHITECTURE.md` → Testes](./ARCHITECTURE.md#testes).
 
