@@ -161,7 +161,11 @@ describe('atomicity', () => {
     try {
       const response = await postJson(`${broken.url}/wallets`, { playerId, initialBalance: brl('100.00') });
       expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({ failureCode: 'INTERNAL_ERROR', message: 'Internal server error' });
+      expect(await response.json()).toEqual({
+        failureCode: 'INTERNAL_ERROR',
+        message: 'Internal server error',
+        retryable: true,
+      });
     } finally {
       await broken.close();
     }

@@ -26,6 +26,7 @@ O role `wallet_app` é criado quando o volume do PostgreSQL nasce. Se o seu volu
 | `bun run db:migrate:down` | reverte a última (`--to <nome>` ou `--all`) |
 | `bun run db:migrate:create <nome>` | cria migration vazia em `migrations/` |
 | `bun run db:migrate:pending` | lista as pendentes |
+| `bun run docs:failures` | regenera a tabela de `failureCode` do `ARCHITECTURE.md` a partir do catálogo |
 | `docker compose down -v` | derruba tudo e apaga os dados |
 
 Health checks: `GET /health/live` e `GET /health/ready` (PostgreSQL + SQS).

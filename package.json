@@ -14,7 +14,8 @@
     "db:migrate:pending": "bun scripts/migrate.ts pending",
     "test": "bun test test/unit",
     "test:integration": "bun test test/integration",
-    "test:all": "bun test"
+    "test:all": "bun test",
+    "docs:failures": "bun scripts/failure-catalog-table.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1161.0",

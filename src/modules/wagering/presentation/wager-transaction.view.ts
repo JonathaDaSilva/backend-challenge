@@ -1,3 +1,4 @@
+import { failureDefinition, isCatalogCode } from '../../../shared/application/failure-catalog';
 import type { MoneyProps } from '../../../shared/domain/money';
 import { type WagerTransaction, WagerTransactionStatus } from '../domain/wager-transaction';
 
@@ -7,6 +8,7 @@ export interface SubmitResponse {
   balance: MoneyProps | undefined;
   idempotentReplay: boolean;
   failureCode?: string;
+  retryable?: boolean;
 }
 
 export function toSubmitResponse(transaction: WagerTransaction, idempotentReplay: boolean): SubmitResponse {
@@ -15,8 +17,13 @@ export function toSubmitResponse(transaction: WagerTransaction, idempotentReplay
     status: transaction.status,
     balance: transaction.resultBalance?.toJSON(),
     idempotentReplay,
-    ...(transaction.failureCode ? { failureCode: transaction.failureCode } : {}),
+    ...failureFields(transaction.failureCode),
   };
+}
+
+function failureFields(code: string | undefined): Pick<SubmitResponse, 'failureCode' | 'retryable'> {
+  if (!code) return {};
+  return { failureCode: code, retryable: isCatalogCode(code) ? failureDefinition(code).retryable : false };
 }
 
 const HTTP_STATUS_BY_RESULT: Partial<Record<WagerTransactionStatus, number>> = {

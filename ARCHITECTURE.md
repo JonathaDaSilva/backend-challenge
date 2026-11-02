@@ -216,26 +216,9 @@ Wallet, transação `OPENING` (PROCESSED, sem campos de provedor) e lançamento 
 
 O formato do payload é validado com **zod** em `presentation/`. O schema é um valor comum, então os mesmos schemas validam a mensagem SQS (#11). O `amount` e a `currency` passam pelo zod como `unknown` e são validados por `Money.fromInput`, para que o erro carregue o `reason` do `Money` (`NOT_A_STRING`, `INVALID_FORMAT`…) em vez de uma mensagem genérica.
 
-### Erros HTTP (primeira versão; a taxonomia completa é a #10)
+### Erros HTTP
 
-Um `ExceptionFilter` global (`src/shared/presentation/error.filter.ts`) responde sempre `{ failureCode, message, ...detalhes }`:
-
-| Situação | Status | `failureCode` |
-|---|---|---|
-| Payload inválido (zod, `Money`, JSON malformado) | 400 | `INVALID_PAYLOAD` (+ `issues` ou `reason`) |
-| Wallet inexistente | 404 | `WALLET_NOT_FOUND` |
-| Wallet duplicada | 409 | `WALLET_ALREADY_EXISTS` (+ `walletId`) |
-| Moeda não suportada | 422 | `UNSUPPORTED_CURRENCY` (+ `supportedCurrencies`) |
-| Transação: mesma `Idempotency-Key` com outro payload | 409 | `IDEMPOTENCY_CONFLICT` (+ `transactionId` original) |
-| Transação: mesmo `(providerId, externalTransactionId)` com outra key | 409 | `DUPLICATE_EXTERNAL_TRANSACTION` |
-| Transação: wallet de outro player / outra moeda | 422 | `WALLET_PLAYER_MISMATCH` / `CURRENCY_MISMATCH` |
-| Transação aguardando referência | 202 | corpo do contrato com `status: "PENDING_REFERENCE"` |
-| Transação inexistente | 404 | `TRANSACTION_NOT_FOUND` |
-| Lock timeout, deadlock esgotado, banco indisponível | 503 | `TRANSIENT_FAILURE`: pode reenviar |
-| Dependência indisponível (health) | 503 | `SERVICE_UNAVAILABLE` |
-| Erro inesperado | 500 | `INTERNAL_ERROR` (sem detalhes; stack só no log) |
-
-O filtro é uma tabela `classe de erro → status + corpo`, então cada erro novo exige só uma linha. Falhas transitórias de banco são reconhecidas pelo SQLSTATE (`55P03`, `57014`, `40001`, `40P01`…) e por erros de conexão.
+A taxonomia completa e as regras de status estão em [Taxonomia de falhas](#taxonomia-de-falhas).
 
 ## Concorrência por wallet
 
@@ -353,6 +336,74 @@ resolve a referência por (providerId, referenceExternalTransactionId)
 - **Duplicidade:** várias instâncias podem acordar para a mesma linha. O lock da wallet e a releitura do status fazem a segunda pular (`skipped`). Pode haver trabalho repetido, mas nunca efeito duplicado; um teste com três workers simultâneos confirma um único crédito.
 - `PENDING_REFERENCE_WORKER_ENABLED=false` desliga o scheduler de uma instância. Os testes usam isso para chamar `processDue` diretamente, com datas controladas.
 
+## Taxonomia de falhas
+
+**Objetivo:** o provedor decide pelo **status HTTP**, sem interpretar a mensagem de erro, se reenvia, corrige o payload ou desiste. O `failureCode` dá o detalhe, e o campo `retryable` responde a pergunta diretamente.
+
+| Status | Categoria | O que o provedor faz |
+|---|---|---|
+| 201 / 200 | — | sucesso (criação / consulta) |
+| 202 | — | aceito, aguardando referência: espere, consulte ou reenvie a mesma key |
+| 400 / 413 / 415 | `VALIDATION` | corrija o payload; se ele mudar, use outra `Idempotency-Key` |
+| 404 | `NOT_FOUND` | o recurso **da URL** não existe |
+| 409 | `CONFLICT` | não reenvie esse payload com essa key |
+| 422 | `BUSINESS_REJECTION` | regra de negócio; reenviar dá a mesma resposta |
+| 503 | `TRANSIENT` | reenvie **a mesma key** com backoff (`Retry-After` no header) |
+| 500 | `INTERNAL` | nada foi gravado (rollback); reenviar a mesma key é seguro |
+
+**Formato.** Todo erro responde `{ failureCode, message, retryable, ...detalhes }`. Os detalhes, quando existem, são `issues` (zod), `reason` (`Money` / `WagerTransaction`), `walletId`, `transactionId` ou `supportedCurrencies`. Uma transação **gravada** como REJECTED responde 422 com o corpo do contrato (`transactionId`, `status`, `balance`, `idempotentReplay`), mais `failureCode` e `retryable`.
+
+**Decisões:**
+- **404 só para a URL.** `GET /wallets/:id` com id inexistente responde 404 `WALLET_NOT_FOUND`. Um `walletId` inexistente **no corpo** de uma transação responde 422 `UNKNOWN_WALLET`: a rota existe e o problema é semântico no payload. Com 404, o provedor poderia concluir que errou a URL.
+- **500 é retentável:** o `TransactionRunner` desfaz tudo, e a idempotência protege o reenvio.
+- **503 sempre leva `Retry-After: 1`.**
+- **`FAILED`:** uma transação nesse status (erro permanente de infraestrutura, registrado pelo consumer SQS na #11) carrega `PERMANENT_FAILURE`.
+
+### Catálogo (fonte única)
+
+`src/shared/application/failure-catalog.ts` declara cada código com categoria, status, `retryable` e descrição:
+- **Filtro HTTP:** o `ErrorFilter` deriva status e corpo do catálogo. Cada classe de erro mapeia para um `CatalogCode`, tipado, então um código fora do catálogo nem compila.
+- **Consumer SQS (#11):** vai usar a mesma categoria para decidir. `BUSINESS_REJECTION`/`CONFLICT` → ack; `TRANSIENT` → retry com backoff; `INTERNAL`/`PERMANENT` → DLQ depois do limite.
+- **Esta documentação:** a tabela abaixo é gerada por `bun run docs:failures`.
+
+Testes (`test/unit/failure-catalog.test.ts`) garantem que:
+- status e `retryable` são coerentes com a categoria;
+- todo `FailureCode` de transação está no catálogo;
+- **toda classe que estende `ApplicationError` ou `DomainError` em `src/` está mapeada ou listada explicitamente como interna** (as internas viram 500, porque indicam bug ou são capturadas antes da borda). Um erro novo esquecido quebra o teste;
+- a tabela abaixo está igual ao catálogo.
+
+Além disso, um teste de contrato (`test/integration/error-contract.test.ts`) provoca cada código alcançável pela API e confere status, `failureCode`, `retryable` e `Retry-After`.
+
+<!-- failure-catalog:start -->
+| `failureCode` | Categoria | HTTP | `retryable` | Significado |
+|---|---|---|---|---|
+| `INVALID_PAYLOAD` | VALIDATION | 400 | não | Payload, header ou parâmetro da URL malformado; corrija antes de reenviar |
+| `PAYLOAD_TOO_LARGE` | VALIDATION | 413 | não | Corpo da requisição maior que o limite aceito |
+| `UNSUPPORTED_MEDIA_TYPE` | VALIDATION | 415 | não | O corpo precisa ser application/json |
+| `NOT_FOUND` | NOT_FOUND | 404 | não | A rota não existe |
+| `WALLET_NOT_FOUND` | NOT_FOUND | 404 | não | A wallet da URL não existe |
+| `TRANSACTION_NOT_FOUND` | NOT_FOUND | 404 | não | A transação da URL não existe |
+| `WALLET_ALREADY_EXISTS` | CONFLICT | 409 | não | O player já tem wallet nessa moeda; o corpo traz o walletId dela |
+| `IDEMPOTENCY_CONFLICT` | CONFLICT | 409 | não | Idempotency-Key já usada com outro payload |
+| `DUPLICATE_EXTERNAL_TRANSACTION` | CONFLICT | 409 | não | Transação do provedor já enviada com outra Idempotency-Key |
+| `UNSUPPORTED_CURRENCY` | BUSINESS_REJECTION | 422 | não | Moeda não habilitada para novas wallets |
+| `UNKNOWN_WALLET` | BUSINESS_REJECTION | 422 | não | O walletId do corpo não existe |
+| `WALLET_PLAYER_MISMATCH` | BUSINESS_REJECTION | 422 | não | A wallet não pertence ao playerId do corpo |
+| `CURRENCY_MISMATCH` | BUSINESS_REJECTION | 422 | não | Moeda da transação diferente da moeda da wallet |
+| `INSUFFICIENT_FUNDS` | BUSINESS_REJECTION | 422 | não | Saldo menor que o valor do BET |
+| `REVERSAL_INSUFFICIENT_FUNDS` | BUSINESS_REJECTION | 422 | não | A reversão deixaria o saldo negativo |
+| `REFERENCE_NOT_FOUND` | BUSINESS_REJECTION | 422 | não | A transação referenciada não chegou dentro da janela de tentativas |
+| `REFERENCE_MISMATCH` | BUSINESS_REJECTION | 422 | não | A referência é de outro provider, player, wallet, moeda ou rodada |
+| `REFERENCE_AMOUNT_MISMATCH` | BUSINESS_REJECTION | 422 | não | Valor da reversão diferente do valor da referência |
+| `INVALID_REFERENCE_KIND` | BUSINESS_REJECTION | 422 | não | REFUND só reverte BET; ROLLBACK só reverte BET, WIN ou REFUND |
+| `REFERENCE_NOT_PROCESSED` | BUSINESS_REJECTION | 422 | não | A referência foi rejeitada ou falhou; não há o que reverter |
+| `ALREADY_REVERSED` | BUSINESS_REJECTION | 422 | não | A referência já foi revertida |
+| `TRANSIENT_FAILURE` | TRANSIENT | 503 | sim | Falha temporária de infraestrutura; reenvie com a mesma Idempotency-Key |
+| `SERVICE_UNAVAILABLE` | TRANSIENT | 503 | sim | Uma dependência está inacessível |
+| `INTERNAL_ERROR` | INTERNAL | 500 | sim | Erro inesperado; nada foi gravado e reenviar a mesma key é seguro |
+| `PERMANENT_FAILURE` | PERMANENT | 500 | não | Falha permanente de infraestrutura, gravada como FAILED (consumer SQS) |
+<!-- failure-catalog:end -->
+
 ## Pendente (próximas issues)
 
-Taxonomia de erros (#10), inbox/outbox (#11, #12), autenticação (#17).
+Inbox/outbox (#11, #12), autenticação (#17).

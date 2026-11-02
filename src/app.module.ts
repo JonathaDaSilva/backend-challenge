@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { HealthModule } from './modules/health/health.module';
@@ -8,6 +8,7 @@ import { createMikroOrmConfig } from './shared/infrastructure/database/mikro-orm
 import { PersistenceModule } from './shared/infrastructure/database/persistence.module';
 import { InfrastructureModule } from './shared/infrastructure/infrastructure.module';
 import { ErrorFilter } from './shared/presentation/error.filter';
+import { JsonContentTypeMiddleware } from './shared/presentation/json-content-type.middleware';
 
 @Module({
   imports: [
@@ -22,4 +23,8 @@ import { ErrorFilter } from './shared/presentation/error.filter';
   ],
   providers: [{ provide: APP_FILTER, useClass: ErrorFilter }],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(JsonContentTypeMiddleware).forRoutes('*');
+  }
+}
