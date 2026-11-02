@@ -596,6 +596,76 @@ Um teste faz uma aposta de `37.91` e confere que nem esse valor nem o saldo resu
 - `GET /health/ready`: `select 1` no PostgreSQL, como `wallet_app`, e `GetQueueUrl` no SQS, com 2 s de timeout cada; 503 se algum falhar.
 - **Drenagem no shutdown:** assim que o SIGTERM inicia o desligamento (`beforeApplicationShutdown`), o `ready` passa a responder 503 com `status: shutting_down`. Isso acontece antes de o consumer e os schedulers pararem, então o balanceador tira a instância da rotação enquanto ela ainda termina o trabalho em andamento. Um teste mantém uma mensagem em processamento, presa num lock de wallet, durante o desligamento, e vê o 503.
 
+## Testes
+
+**Nenhum teste de integração usa mock de PostgreSQL ou SQS.** Todos rodam contra o Postgres e a MiniStack do `docker-compose.yml`, com filas descartáveis por teste quando precisam de isolamento. Os únicos dublês são `TransactionRunner`/repositórios em memória nos testes unitários de regras puras, e substituições pontuais de um provider (ex.: um ledger que falha) para provocar uma falha específica.
+
+| Comando | Escopo |
+|---|---|
+| `bun test` | tudo (cerca de 400 testes; exige o compose no ar) |
+| `bun run test` | só unitários |
+| `bun run test:integration` | integração com PostgreSQL e SQS reais |
+| `bun run test:concurrency` | os cenários de concorrência e falha (multi-instância, crash, publishers, reinício) |
+
+### Invariante final em todos os testes
+
+O README pede `wallet.balance == saldo reconstruído pelo ledger` como invariante final de **todos** os testes. Para não depender de cada teste lembrar dela:
+- toda wallet criada pelo helper `createWallet` é registrada;
+- um `afterAll` no preload do `bun test` (`test/setup/ledger-invariant.preload.ts`, configurado no `bunfig.toml`) roda **uma vez, depois de todos os arquivos**, e confere todas as wallets registradas:
+  - saldo = créditos − débitos;
+  - versões do ledger contínuas, começando em 1 com saldo inicial ou em 2 com abertura zero;
+  - versão da wallet = última versão.
+
+Qualquer violação, em qualquer arquivo, falha a execução e lista as wallets afetadas. O único teste que corrompe um saldo de propósito (a divergência da reconciliação) o restaura ao terminar.
+
+### Rastreabilidade (§13 do README)
+
+**Unidade** (`test/unit/`)
+
+| Exigência | Teste |
+|---|---|
+| `Money`: escala, arredondamento, entradas inválidas | `money.test.ts`. Não há arredondamento por desenho: mais de 2 casas é **rejeitado** (`TOO_MANY_DECIMALS`), nunca arredondado |
+| invariantes da `Wallet` | `wallet/wallet.test.ts`, `wallet/wallet-ledger-entry.test.ts` |
+| regras de BET, WIN, LOSS, REFUND, ROLLBACK | `wagering/wager-transaction.test.ts` (criação, transições, `checkReversalOf`, direção do ledger) |
+| conflito de moeda | `money.test.ts` (*currency mismatch*), `wallet/wallet.test.ts` (*rejects another currency*) |
+| idempotency key com payload divergente | `wagering/submit-idempotency.test.ts`, `wagering/payload-hash.test.ts` |
+
+**Integração** (`test/integration/`)
+
+| Exigência | Teste |
+|---|---|
+| migrations | `migrations.test.ts`: up → down completo → up num banco descartável, mais grants do `wallet_app` |
+| constraints | `schema/*.test.ts`: cada invariante do banco verificada por SQLSTATE e nome da constraint |
+| atomicidade entre wallet, ledger, inbox e outbox | `wallet/wallets-api.test.ts` (*atomicity*), `outbox/outbox-events.test.ts` (*rolled back operation*), `messaging/wager-consumer.test.ts` (inbox + efeito no mesmo commit) |
+| inbox e redelivery | `messaging/wager-consumer.test.ts` (*same messageId delivered twice*), `messaging/crash-after-commit.test.ts` |
+| publishers concorrentes sobre a mesma outbox | `outbox/outbox-publisher.test.ts` (*two publishers*) |
+| retry e DLQ | `messaging/wager-consumer.test.ts` (*transient failure*, *last attempt*, mensagens inválidas) |
+| recuperação após reinicialização | `concurrency/restart-consistency.test.ts`, `outbox/outbox-publisher.test.ts` (*process dies before publishing*), `wagering/pending-reference-scheduler.test.ts` (*instance that starts later*) |
+
+**Concorrência** (paralelismo real)
+
+| # | Exigência | Teste |
+|---|---|---|
+| 1 | a mesma aposta 50× em paralelo → um débito | `concurrency/wallet-locking.test.ts` (*50 times in parallel*); 30× entre 3 instâncias em `multi-instance.test.ts` |
+| 2 | saldo disputado na mesma wallet (cenário da §8) | `wallet-locking.test.ts` (*80.00 bets against 100.00*, rajada de 30), `multi-instance.test.ts` (cenário obrigatório com cada aposta numa instância, 60 apostas) |
+| 3 | wallets distintas em paralelo | `wallet-locking.test.ts` (*not blocked by a locked wallet*), `multi-instance.test.ts` (*different wallets*) |
+| 4 | ≥ 3 processos simultâneos | `concurrency/multi-instance.test.ts`, `restart-consistency.test.ts` (3 processos `bun` separados) |
+| 5 | worker morto depois do commit e antes do ack | `messaging/crash-after-commit.test.ts` (processo real encerrado no `DeleteMessage`) |
+| 6 | dois publishers sobre a mesma outbox | `outbox/outbox-publisher.test.ts` (200 linhas, cada uma enviada uma vez) |
+| 7 | ROLLBACK/REFUND antes da referência | `wagering/reversals-api.test.ts` (*references that arrive late*, cascata), `restart-consistency.test.ts` |
+| 8 | reinício com consistência final | `concurrency/restart-consistency.test.ts` |
+
+**O teste de reinício (`restart-consistency.test.ts`):**
+- **Instâncias:** três processos reais. Um deles roda um entry de teste que **encerra o processo logo depois de comitar a 3ª submissão, antes de responder**, e é reiniciado no meio da carga.
+- **Carga mista** em 8 wallets: BETs, WINs, LOSS, REFUNDs enviados antes da BET, reenvios idênticos e mensagens SQS.
+- **Reenvio:** as requisições que perderam a resposta são reenviadas com a mesma `Idempotency-Key`, como faria um provedor. O teste exige que, entre elas, haja tanto transações já comitadas quanto não comitadas.
+- **Verificação final**, depois de estabilizar:
+  - toda resposta corresponde à transação e ao status gravados;
+  - não sobra nenhuma referência pendente;
+  - todo evento da outbox foi publicado;
+  - há exatamente um lançamento por transação que move saldo e um `WagerTransactionProcessed` por transação processada;
+  - saldo = ledger.
+
 ## Pendente (próximas issues)
 
 Autenticação (#17).

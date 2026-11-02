@@ -21,6 +21,7 @@ O role `wallet_app` é criado quando o volume do PostgreSQL nasce. Se o seu volu
 | `bun test` | todos os testes (exige o compose rodando) |
 | `bun run test` | só testes unitários |
 | `bun run test:integration` | integração com PostgreSQL e SQS reais |
+| `bun run test:concurrency` | cenários de concorrência e falha (3 instâncias, crash antes do ack, publishers, reinício) |
 | `bun run typecheck` / `bun run lint` | TypeScript estrito e regras de camadas |
 | `bun run db:migrate:up` | aplica migrations pendentes |
 | `bun run db:migrate:down` | reverte a última (`--to <nome>` ou `--all`) |
