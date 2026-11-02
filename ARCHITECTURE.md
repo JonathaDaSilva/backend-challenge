@@ -90,7 +90,7 @@ Wallet (domínio) ⇄ WalletMapper ⇄ WalletRecord ⇄ EntitySchema ⇄ tabela 
 **Port** (`src/shared/application/transaction-runner.ts`): `TransactionRunner.run(work)`, sem dependência de framework. A implementação, `MikroOrmTransactionRunner` (`src/shared/infrastructure/database/`), é injetada pelo token `TRANSACTION_RUNNER`.
 
 - **Isolamento: READ COMMITTED**, o padrão do PostgreSQL. A proteção contra lost update não vem do nível de isolamento, e sim de lock de linha ou update condicional por wallet (#06). SERIALIZABLE causaria aborts frequentes em hot wallets sem ganho real, já que o conflito relevante é sempre na mesma linha.
-- **Uma unidade de trabalho = um `run`.** Inbox (quando via SQS), mudança de status, saldo, ledger e outbox ficam todos dentro do mesmo `run`. Nada é publicado dentro dele: eventos só saem pela outbox depois do commit (restrição 4, #12).
+- **Uma unidade de trabalho = um `run`.** Inbox (quando via SQS), mudança de status, saldo, ledger e outbox ficam todos dentro do mesmo `run`. Nada é publicado dentro dele: eventos só saem pela outbox depois do commit (restrição 4; ver [Transactional Outbox](#transactional-outbox)).
 - **Retry limitado** de no máximo 3 tentativas, com backoff exponencial e jitter total, **só** para `40001` (serialization failure) e `40P01` (deadlock). Qualquer outro erro, inclusive violação de constraint, sobe na hora. Por isso `work` precisa ser re-executável: nada de efeito colateral fora do banco.
 - **Aninhamento:** um `run` chamado dentro de outro entra na transação externa (`REQUIRED`) e não faz retry próprio. Depois que o PostgreSQL aborta uma transação, só o `run` mais externo consegue reiniciá-la.
 - **Contexto:** o runner usa `em.getContext(false)` e funciona sem `RequestContext` HTTP, como no consumer SQS e nos workers agendados.
@@ -268,7 +268,7 @@ run:
   4. WagerTransaction.create           (PENDING, só em memória)
   5. BET → debit | WIN → credit | LOSS → nada
        sem saldo → REJECTED INSUFFICIENT_FUNDS, gravada, sem ledger
-  6. grava transação (+ saldo com version check + lançamento)   [outbox entra aqui na #12, inbox na #11]
+  6. grava transação (+ saldo com version check + lançamento) + eventos na outbox   [+ inbox, quando via SQS]
 ```
 
 **Máquina de estados** (`WagerTransaction`):
@@ -325,7 +325,7 @@ resolve a referência por (providerId, referenceExternalTransactionId)
 - **Backoff:** `min(1 s × 2ⁿ, 60 s)` com *equal jitter* (metade fixa, metade aleatória). São **8 tentativas**, cerca de **3 minutos** no pior caso.
 - **Justificativa do limite:** referência fora de ordem é, na prática, reordenação de fila, e se resolve em segundos (e o caso comum nem passa pelo worker). Uma BET que não apareceu em 3 minutos dificilmente vai aparecer, e o provedor precisa de uma resposta definitiva.
 - **Configuração:** `PENDING_REFERENCE_MAX_ATTEMPTS`, `_BASE_DELAY_MS`, `_MAX_DELAY_MS`, `_BATCH_SIZE`.
-- **Esgotado:** REJECTED `REFERENCE_NOT_FOUND`. O evento correspondente entra pela outbox (#12).
+- **Esgotado:** REJECTED `REFERENCE_NOT_FOUND`, com `WagerTransactionRejected` na outbox no mesmo commit.
 - **Agenda fora do agregado:** `attempts` e `next_attempt_at` são agenda, não regra de negócio. Ficam fora do agregado `WagerTransaction`, só na tabela e no repositório.
 
 **Agendamento sem polling.** Cada instância mantém **um** `setTimeout` apontado para o `next_attempt_at` mais próximo; sem pendentes, não há timer.
@@ -464,6 +464,64 @@ Com `min(2 s × 2ⁿ⁻¹, 60 s)`, as esperas acumuladas são 2, 6, 14, 30, 62 e
 - shutdown com uma mensagem em voo e duas devolvidas na hora;
 - **um processo `bun` separado morre exatamente no `DeleteMessage`, depois do commit.** Outro consumer recebe a redelivery, a inbox a reconhece e o débito continua sendo um só.
 
+## Transactional Outbox
+
+**Regra:** nenhum código publica direto no broker. Os eventos são **linhas em `outbox_messages`**, gravadas pelo `EventRecorder` dentro do mesmo `TransactionRunner.run` da mudança financeira. Se o commit falha, não há evento; se o commit passa, o evento existe e será publicado. Isso fecha o *dual write problem* e a restrição 4. Com isso, transação, saldo, ledger, inbox e outbox ficam todos no mesmo commit, o que também conclui a atomicidade pedida na #08.
+
+### Eventos
+
+| Evento | Quando | `aggregateId` | `causationId` |
+|---|---|---|---|
+| `WagerTransactionProcessed` | toda transação aplicada, inclusive LOSS (submissão, cascata, worker) | transação | a referência, quando aplicada em cascata |
+| `WagerTransactionRejected` | toda REJECTED gravada, inclusive `REFERENCE_NOT_FOUND` | transação | — |
+| `WalletBalanceChanged` | **só** quando há lançamento no ledger, inclusive o OPENING | wallet | a transação que moveu o saldo |
+| `WagerTransactionPendingReference` | na **primeira** vez que fica pendente, não a cada reagendamento | transação | — |
+
+**Bordas documentadas:**
+- **OPENING:** gera só `WalletBalanceChanged`, porque é interno e não tem provedor a notificar.
+- **FAILED:** não gera evento, porque não está na lista do §11.
+- **Rejeições não gravadas** (`UNKNOWN_WALLET`, conflitos): não geram evento, porque não há commit onde escrevê-lo.
+
+**Envelope.** A classe abstrata `IntegrationEvent<T>` (`src/shared/application/integration-event.ts`) tem uma subclasse por evento (`src/modules/wagering/application/events.ts`), cada uma com `eventType` e `version` **no tipo**. O `data` carrega só `MoneyProps` (string decimal) e fica congelado. O `toJSON()` produz o envelope do §11, e é ele que vai para a coluna `payload`.
+
+**`correlationId`.** No HTTP, vem do header `X-Correlation-Id` (validado; se ausente, gerado) e é devolvido na resposta. No SQS, vem do `messageId` do envelope. Nos workers agendados, um por execução. É propagado por AsyncLocalStorage (`async-correlation-context.ts`), sem passar parâmetro pelos use cases. O mesmo contexto será usado pelos logs (#14).
+
+### Publisher
+
+`OutboxPublisher.processDue(now)` roda em lotes de 10, cada lote num `run`:
+
+```
+SELECT … FROM outbox_messages
+ WHERE published_at IS NULL AND next_attempt_at <= now
+ ORDER BY next_attempt_at, seq LIMIT 10
+ FOR UPDATE SKIP LOCKED                      ← outra instância pula estas linhas
+SendMessageBatch → wallet-events.fifo
+UPDATE: published_at (aceitos) | attempts + 1, next_attempt_at = backoff (recusados)
+COMMIT
+```
+
+- **Coordenação sem coluna de lease:** o lock da linha é o lease. Duas instâncias nunca pegam a mesma linha. Se o processo morre no meio, a conexão cai, o Postgres solta os locks e outra instância republica. O custo é manter a transação aberta durante uma chamada ao SQS, de milissegundos e sob o `statement_timeout`.
+- **Retry sem limite:** `min(1 s × 2ⁿ⁻¹, 5 min)` com jitter. O §11 pede "sem perder", então nenhum evento é descartado. Um evento que insiste em falhar aparece como lag da outbox (métrica da #14), e não some.
+- **Sem polling:** um trigger (`outbox_messages_notify_trg`) dispara `NOTIFY outbox` no commit. O `DeadlineScheduler`, extraído do worker da #09 e compartilhado com ele, mantém um timer no próximo `next_attempt_at` e relê o banco ao subir ou reconectar. `EVENTS_PUBLISHER_ENABLED=false` desliga o publisher de uma instância.
+
+### Destino e entrega
+
+- **Fila:** `wallet-events.fifo`, com `MessageGroupId = aggregateId` e `MessageDeduplicationId = eventId`. Em produção, o natural seria um tópico SNS com fan-out para as filas de cada consumidor; para isso basta trocar o `EventPublisher`, sem mexer na outbox.
+- **At-least-once:** um processo que morre depois do `SendMessageBatch` e antes do commit faz o lote ser reenviado. A deduplicação da FIFO por `eventId` descarta repetições dentro de 5 minutos, mas isso é otimização. **O consumidor deve deduplicar pelo `eventId`**, que é estável entre republicações.
+- **Ordem:** com vários publishers, dois eventos da mesma wallet podem sair fora de ordem. O consumidor ordena os `WalletBalanceChanged` pelo `walletVersion`; os eventos de transação são independentes entre si.
+
+### Provas
+
+- **`test/integration/outbox/outbox-events.test.ts`:**
+  - os eventos certos em cada caso (OPENING, BET, LOSS, rejeição, referência tardia liquidada junto com a BET, expiração);
+  - um rollback não deixa nenhuma linha.
+- **`test/integration/outbox/outbox-publisher.test.ts`:**
+  - uma linha numa transação aberta **não** é publicada até o commit;
+  - **um processo gravou, fez commit e morreu antes de publicar, e outra instância publicou**;
+  - dois publishers sobre 200 linhas enviam cada uma exatamente uma vez;
+  - um destino fora do ar reagenda com backoff e publica depois;
+  - a republicação do mesmo `eventId` é colapsada.
+
 ## Pendente (próximas issues)
 
-Outbox (#12), autenticação (#17).
+Autenticação (#17).
