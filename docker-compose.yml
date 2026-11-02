@@ -33,5 +33,39 @@ services:
       timeout: 3s
       retries: 30
 
+  # Opcional: a aplicação também em container (docker compose --profile app up).
+  migrate:
+    profiles: [app]
+    build: .
+    command: ["bun", "scripts/migrate.ts", "up"]
+    environment:
+      MIGRATION_DATABASE_URL: postgres://wallet:wallet@postgres:5432/wallet
+      DATABASE_URL: postgres://wallet_app:wallet_app@postgres:5432/wallet
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    profiles: [app]
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://wallet_app:wallet_app@postgres:5432/wallet
+      MIGRATION_DATABASE_URL: postgres://wallet:wallet@postgres:5432/wallet
+      AWS_ENDPOINT_URL: http://sqs:4566
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sqs:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health/ready >/dev/null || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
 volumes:
   postgres-data:
