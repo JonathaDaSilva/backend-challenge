@@ -15,7 +15,8 @@
     "test": "bun test test/unit",
     "test:integration": "bun test test/integration",
     "test:all": "bun test",
-    "docs:failures": "bun scripts/failure-catalog-table.ts"
+    "docs:failures": "bun scripts/failure-catalog-table.ts",
+    "test:concurrency": "bun test test/integration/concurrency test/integration/messaging/crash-after-commit.test.ts test/integration/outbox/outbox-publisher.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1161.0",
