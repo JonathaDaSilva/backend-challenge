@@ -91,6 +91,7 @@ Mensagens SQS em `wager-transactions.fifo` seguem o envelope `WagerTransactionRe
 | `EVENTS_PUBLISHER_ENABLED` | `true` | liga o publisher da outbox |
 | `EVENTS_QUEUE` | `wallet-events.fifo` | destino dos eventos |
 | `EVENTS_BATCH_SIZE` · `EVENTS_BASE_DELAY_MS` · `EVENTS_MAX_DELAY_MS` | `10` · `1000` · `300000` | lote e backoff do publisher (sem limite de tentativas) |
+| `EVENTS_PUBLISH_TIMEOUT_MS` | `3000` | prazo de cada envio ao SQS, com a transação da outbox aberta |
 | `AWS_REGION` · `AWS_ENDPOINT_URL` · `AWS_ACCESS_KEY_ID` · `AWS_SECRET_ACCESS_KEY` | `us-east-1` · `http://localhost:4566` · `test` · `test` | cliente SQS |
 
 ## Testes

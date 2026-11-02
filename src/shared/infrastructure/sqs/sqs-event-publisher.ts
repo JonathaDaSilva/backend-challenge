@@ -8,10 +8,12 @@ export class SqsEventPublisher implements EventPublisher {
   constructor(
     private readonly sqs: SQSClient,
     private readonly queueName: string,
+    private readonly timeoutMs: number,
   ) {}
 
   async publish(messages: readonly OutboxMessage[]): Promise<PublishResult> {
-    this.queueUrl ??= (await this.sqs.send(new GetQueueUrlCommand({ QueueName: this.queueName }))).QueueUrl;
+    const abortSignal = AbortSignal.timeout(this.timeoutMs);
+    this.queueUrl ??= (await this.sqs.send(new GetQueueUrlCommand({ QueueName: this.queueName }), { abortSignal })).QueueUrl;
     const { Failed = [] } = await this.sqs.send(
       new SendMessageBatchCommand({
         QueueUrl: this.queueUrl,
@@ -23,6 +25,7 @@ export class SqsEventPublisher implements EventPublisher {
           MessageAttributes: { eventType: { DataType: 'String', StringValue: message.eventType } },
         })),
       }),
+      { abortSignal },
     );
     const failed = new Set(Failed.map((failure) => messages[Number(failure.Id?.slice(1))]?.id ?? ''));
     return { failed };

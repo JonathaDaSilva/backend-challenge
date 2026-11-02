@@ -1,8 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
+import { type AddressInfo, createServer, type Socket } from 'node:net';
 import type { SQSClient } from '@aws-sdk/client-sqs';
 import { EVENT_PUBLISHER, type EventPublisher } from '../../../src/shared/application/outbox';
 import { OutboxPublisher } from '../../../src/shared/application/outbox-publisher';
-import type { AppConfig } from '../../../src/shared/infrastructure/config';
+import { type AppConfig, loadConfig } from '../../../src/shared/infrastructure/config';
+import { createSqsClient } from '../../../src/shared/infrastructure/sqs/sqs.client';
 import { SqsEventPublisher } from '../../../src/shared/infrastructure/sqs/sqs-event-publisher';
 import { SQS_CLIENT } from '../../../src/shared/infrastructure/tokens';
 import { type StartedApp, startApp, withConfig } from '../support/app';
@@ -41,7 +43,7 @@ async function publisherApp(enabled: boolean, publisher?: (real: EventPublisher)
     if (!publisher) return configured;
     return configured.overrideProvider(EVENT_PUBLISHER).useFactory({
       inject: [SQS_CLIENT],
-      factory: (sqs: SQSClient) => publisher(new SqsEventPublisher(sqs, queue.queueName)),
+      factory: (sqs: SQSClient) => publisher(new SqsEventPublisher(sqs, queue.queueName, 5_000)),
     });
   });
   started.push(app);
@@ -194,6 +196,38 @@ describe('outbox publisher', () => {
       await publisher.processDue(new Date(now.getTime() + 10_000));
       expect(await outboxState(id)).toMatchObject({ published: true, attempts: 1 });
       expect(withIds(await receiveEvents(queue, 500, 5_000), [id])).toHaveLength(1);
+    },
+    40_000,
+  );
+
+  test(
+    'a destination that never answers is cut off by the timeout and rescheduled',
+    async () => {
+      queue = await createEventsQueue();
+      const [id] = await insertOutboxRows(1);
+      if (!id) throw new Error('no outbox row');
+
+      const sockets = new Set<Socket>();
+      const silent = createServer((socket) => {
+        sockets.add(socket);
+        socket.on('error', () => {});
+      });
+      await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', resolve));
+      const { port } = silent.address() as AddressInfo;
+      const sqs = createSqsClient({ ...loadConfig().aws, endpoint: `http://127.0.0.1:${port}` });
+
+      try {
+        const app = await publisherApp(false, () => new SqsEventPublisher(sqs, queue.queueName, 200));
+        const startedAt = performance.now();
+        await app.get<OutboxPublisher>(OutboxPublisher).processDue(new Date(Date.now() + 1_000));
+
+        expect(performance.now() - startedAt).toBeLessThan(5_000);
+        expect(await outboxState(id)).toMatchObject({ published: false, attempts: 1 });
+      } finally {
+        sqs.destroy();
+        for (const socket of sockets) socket.destroy();
+        silent.close();
+      }
     },
     40_000,
   );

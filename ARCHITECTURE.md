@@ -550,7 +550,7 @@ UPDATE: published_at (aceitos) | attempts + 1, next_attempt_at = backoff (recusa
 COMMIT
 ```
 
-- **Coordenação sem coluna de lease:** o lock da linha é o lease. Duas instâncias nunca pegam a mesma linha. Se o processo morre no meio, a conexão cai, o Postgres solta os locks e outra instância republica. O custo é manter a transação aberta durante uma chamada ao SQS, de milissegundos e sob o `statement_timeout`.
+- **Coordenação sem coluna de lease:** o lock da linha é o lease. Duas instâncias nunca pegam a mesma linha. Se o processo morre no meio, a conexão cai, o Postgres solta os locks e outra instância republica. O custo é manter a transação aberta durante a chamada ao SQS. O `statement_timeout` não cobre esse tempo, porque só limita comandos SQL. Quem limita é `EVENTS_PUBLISH_TIMEOUT_MS` (padrão 3000): um único prazo por `publish`, que inclui os retries do SDK. Estourado o prazo, o lote volta com backoff. O envio pode ter chegado ao SQS antes do corte, e aí o reenvio cai no caso at-least-once descrito abaixo.
 - **Retry sem limite:** `min(1 s × 2ⁿ⁻¹, 5 min)` com jitter. O §11 pede "sem perder", então nenhum evento é descartado. Um evento que insiste em falhar aparece no lag da outbox (`outbox_oldest_pending_age_seconds`), e não some.
 - **Sem polling:** um trigger (`outbox_messages_notify_trg`) dispara `NOTIFY outbox` no commit. O `DeadlineScheduler`, compartilhado com o worker de referências pendentes, mantém um timer no próximo `next_attempt_at` e relê o banco ao subir ou reconectar. `EVENTS_PUBLISHER_ENABLED=false` desliga o publisher de uma instância.
 

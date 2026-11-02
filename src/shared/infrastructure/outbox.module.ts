@@ -38,7 +38,8 @@ export const OUTBOX_SCHEDULER = Symbol('OUTBOX_SCHEDULER');
     {
       provide: EVENT_PUBLISHER,
       inject: [SQS_CLIENT, APP_CONFIG],
-      useFactory: (sqs: SQSClient, config: AppConfig) => new SqsEventPublisher(sqs, config.events.queueName),
+      useFactory: (sqs: SQSClient, config: AppConfig) =>
+        new SqsEventPublisher(sqs, config.events.queueName, config.events.publishTimeoutMs),
     },
     {
       provide: OutboxPublisher,

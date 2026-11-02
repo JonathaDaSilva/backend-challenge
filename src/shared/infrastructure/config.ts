@@ -69,6 +69,7 @@ export interface AppConfig {
     readonly batchSize: number;
     readonly baseDelayMs: number;
     readonly maxDelayMs: number;
+    readonly publishTimeoutMs: number;
   };
   readonly aws: {
     readonly region: string;
@@ -115,6 +116,7 @@ export function loadConfig(): AppConfig {
       batchSize: positiveInt('EVENTS_BATCH_SIZE', '10'),
       baseDelayMs: positiveInt('EVENTS_BASE_DELAY_MS', '1000'),
       maxDelayMs: positiveInt('EVENTS_MAX_DELAY_MS', '300000'),
+      publishTimeoutMs: positiveInt('EVENTS_PUBLISH_TIMEOUT_MS', '3000'),
     },
     aws: {
       region: required('AWS_REGION', 'us-east-1'),
