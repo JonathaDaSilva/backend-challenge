@@ -1,91 +1,106 @@
 import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, Logger } from '@nestjs/common';
 import {
   DuplicateExternalTransactionError,
+  DuplicateIdempotencyKeyError,
   IdempotencyConflictError,
   TransactionNotFoundError,
+  UnknownWalletError,
   WalletCurrencyMismatchError,
   WalletPlayerMismatchError,
 } from '../../modules/wagering/application/errors';
-import { InvalidWagerTransactionError } from '../../modules/wagering/domain/errors';
+import { InvalidTransactionStateError, InvalidWagerTransactionError } from '../../modules/wagering/domain/errors';
 import { UnsupportedCurrencyError, WalletAlreadyExistsError, WalletNotFoundError } from '../../modules/wallet/application/errors';
-import { InvalidPayloadError } from '../application/errors';
-import { InvalidMoneyError } from '../domain/errors';
+import { InsufficientFundsError, InvalidLedgerEntryError, InvalidMovementError } from '../../modules/wallet/domain/errors';
+import { ConcurrentModificationError, InvalidPayloadError } from '../application/errors';
+import { type CatalogCode, failureDefinition } from '../application/failure-catalog';
+import { CurrencyMismatchError, InvalidMoneyError } from '../domain/errors';
 import { isTransientDatabaseError } from '../infrastructure/database/pg-errors';
 
 interface HttpResponse {
   status(code: number): HttpResponse;
+  setHeader(name: string, value: string): void;
   json(body: unknown): void;
-}
-
-type ErrorBody = { failureCode: string; message: string } & Record<string, unknown>;
-
-interface ErrorResponse {
-  readonly status: number;
-  readonly body: ErrorBody;
 }
 
 type ErrorClass = abstract new (...args: never[]) => Error;
 
-interface Mapping {
+interface ErrorMapping {
   readonly type: ErrorClass;
-  readonly status: number;
-  readonly body: (error: never) => ErrorBody;
+  readonly code: CatalogCode;
+  readonly extra: (error: never) => Record<string, unknown>;
 }
-
-const coded = (error: Error & { code: string }): ErrorBody => ({ failureCode: error.code, message: error.message });
-const invalidPayload = (error: Error, extra: Record<string, unknown>): ErrorBody => ({
-  failureCode: 'INVALID_PAYLOAD',
-  message: error.message,
-  ...extra,
-});
 
 const map = <E extends Error>(
   type: abstract new (...args: never[]) => E,
-  status: number,
-  body: (error: E) => ErrorBody,
-): Mapping => ({ type, status, body });
+  code: CatalogCode,
+  extra: (error: E) => Record<string, unknown> = () => ({}),
+): ErrorMapping => ({ type, code, extra });
 
-const MAPPINGS: readonly Mapping[] = [
-  map(InvalidPayloadError, 400, (e) => ({ ...coded(e), issues: e.issues })),
-  map(InvalidMoneyError, 400, (e) => invalidPayload(e, { reason: e.reason })),
-  map(InvalidWagerTransactionError, 400, (e) => invalidPayload(e, { reason: e.reason })),
-  map(WalletNotFoundError, 404, coded),
-  map(TransactionNotFoundError, 404, coded),
-  map(WalletAlreadyExistsError, 409, (e) => ({ ...coded(e), walletId: e.existingWalletId })),
-  map(IdempotencyConflictError, 409, (e) => ({ ...coded(e), transactionId: e.transactionId })),
-  map(DuplicateExternalTransactionError, 409, coded),
-  map(UnsupportedCurrencyError, 422, (e) => ({ ...coded(e), supportedCurrencies: e.supported })),
-  map(WalletPlayerMismatchError, 422, coded),
-  map(WalletCurrencyMismatchError, 422, coded),
+export const ERROR_MAPPINGS: readonly ErrorMapping[] = [
+  map(InvalidPayloadError, 'INVALID_PAYLOAD', (e) => ({ issues: e.issues })),
+  map(InvalidMoneyError, 'INVALID_PAYLOAD', (e) => ({ reason: e.reason })),
+  map(InvalidWagerTransactionError, 'INVALID_PAYLOAD', (e) => ({ reason: e.reason })),
+  map(WalletNotFoundError, 'WALLET_NOT_FOUND'),
+  map(TransactionNotFoundError, 'TRANSACTION_NOT_FOUND'),
+  map(WalletAlreadyExistsError, 'WALLET_ALREADY_EXISTS', (e) => ({ walletId: e.existingWalletId })),
+  map(IdempotencyConflictError, 'IDEMPOTENCY_CONFLICT', (e) => ({ transactionId: e.transactionId })),
+  map(DuplicateExternalTransactionError, 'DUPLICATE_EXTERNAL_TRANSACTION'),
+  map(UnsupportedCurrencyError, 'UNSUPPORTED_CURRENCY', (e) => ({ supportedCurrencies: e.supported })),
+  map(UnknownWalletError, 'UNKNOWN_WALLET'),
+  map(WalletPlayerMismatchError, 'WALLET_PLAYER_MISMATCH'),
+  map(WalletCurrencyMismatchError, 'CURRENCY_MISMATCH'),
+  map(ConcurrentModificationError, 'TRANSIENT_FAILURE'),
 ];
 
-const HTTP_FAILURE_CODES: Record<number, string> = {
+// Erros que nunca deveriam chegar à borda: são capturados antes ou indicam bug. Viram 500 INTERNAL_ERROR.
+export const INTERNAL_ERROR_TYPES: readonly ErrorClass[] = [
+  DuplicateIdempotencyKeyError,
+  InsufficientFundsError,
+  InvalidTransactionStateError,
+  InvalidMovementError,
+  InvalidLedgerEntryError,
+  CurrencyMismatchError,
+];
+
+const HTTP_EXCEPTION_CODES: Record<number, CatalogCode> = {
   400: 'INVALID_PAYLOAD',
   404: 'NOT_FOUND',
+  413: 'PAYLOAD_TOO_LARGE',
+  415: 'UNSUPPORTED_MEDIA_TYPE',
   503: 'SERVICE_UNAVAILABLE',
 };
+
+const RETRY_AFTER_SECONDS = '1';
+
+export interface ErrorResponse {
+  readonly status: number;
+  readonly body: { failureCode: CatalogCode; message: string; retryable: boolean } & Record<string, unknown>;
+}
+
+function respond(code: CatalogCode, message: string, extra: Record<string, unknown> = {}, status?: number): ErrorResponse {
+  const definition = failureDefinition(code);
+  return {
+    status: status ?? definition.status,
+    body: { failureCode: code, message, retryable: definition.retryable, ...extra },
+  };
+}
 
 function fromHttpException(error: HttpException): ErrorResponse {
   const status = error.getStatus();
   const payload = error.getResponse();
-  const custom = typeof payload === 'object' && payload !== null && !('statusCode' in payload) ? payload : {};
-  return {
-    status,
-    body: { failureCode: HTTP_FAILURE_CODES[status] ?? 'HTTP_ERROR', message: error.message, ...custom },
-  };
+  const extra = typeof payload === 'object' && payload !== null && !('statusCode' in payload) ? payload : {};
+  const code = HTTP_EXCEPTION_CODES[status] ?? (status < 500 ? 'INVALID_PAYLOAD' : 'INTERNAL_ERROR');
+  return respond(code, error.message, extra as Record<string, unknown>, status);
 }
 
-function toErrorResponse(error: unknown): ErrorResponse | undefined {
+export function toErrorResponse(error: unknown): ErrorResponse | undefined {
   if (error instanceof Error) {
-    const mapping = MAPPINGS.find((candidate) => error instanceof candidate.type);
-    if (mapping) return { status: mapping.status, body: (mapping.body as (error: Error) => ErrorBody)(error) };
+    const mapping = ERROR_MAPPINGS.find((candidate) => error instanceof candidate.type);
+    if (mapping) return respond(mapping.code, error.message, (mapping.extra as (e: Error) => Record<string, unknown>)(error));
   }
   if (error instanceof HttpException) return fromHttpException(error);
   if (isTransientDatabaseError(error)) {
-    return {
-      status: 503,
-      body: { failureCode: 'TRANSIENT_FAILURE', message: 'Temporary failure, the request can be retried' },
-    };
+    return respond('TRANSIENT_FAILURE', 'Temporary failure, the request can be retried');
   }
   return undefined;
 }
@@ -97,12 +112,11 @@ export class ErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<HttpResponse>();
     const mapped = toErrorResponse(error);
-    if (mapped) {
-      if (mapped.status >= 500) this.logger.warn(error instanceof Error ? error.message : String(error));
-      response.status(mapped.status).json(mapped.body);
-      return;
-    }
-    this.logger.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
-    response.status(500).json({ failureCode: 'INTERNAL_ERROR', message: 'Internal server error' });
+    if (!mapped) this.logger.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+    else if (mapped.status >= 500) this.logger.warn(error instanceof Error ? error.message : String(error));
+
+    const { status, body } = mapped ?? respond('INTERNAL_ERROR', 'Internal server error');
+    if (status === 503) response.setHeader('Retry-After', RETRY_AFTER_SECONDS);
+    response.status(status).json(body);
   }
 }

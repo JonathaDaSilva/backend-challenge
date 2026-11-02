@@ -159,10 +159,10 @@ describe('POST /wagering/transactions', () => {
       expect(await response.json()).toMatchObject({ failureCode: 'WALLET_PLAYER_MISMATCH' });
     });
 
-    test('rejects an unknown wallet', async () => {
+    test('rejects a walletId in the body that does not exist with 422, not 404', async () => {
       const response = await submit(app.url, { walletId: Bun.randomUUIDv7(), playerId: Bun.randomUUIDv7() });
-      expect(response.status).toBe(404);
-      expect(await response.json()).toMatchObject({ failureCode: 'WALLET_NOT_FOUND' });
+      expect(response.status).toBe(422);
+      expect(await response.json()).toMatchObject({ failureCode: 'UNKNOWN_WALLET', retryable: false });
     });
   });
 });

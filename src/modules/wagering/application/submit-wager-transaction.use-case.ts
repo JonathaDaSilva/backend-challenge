@@ -2,12 +2,12 @@ import type { Clock } from '../../../shared/application/clock';
 import type { IdGenerator } from '../../../shared/application/id-generator';
 import type { TransactionRunner } from '../../../shared/application/transaction-runner';
 import type { Money } from '../../../shared/domain/money';
-import { WalletNotFoundError } from '../../wallet/application/errors';
 import type { WalletRepository } from '../../wallet/application/ports';
 import { WagerTransaction, type WagerTransactionKind } from '../domain/wager-transaction';
 import {
   DuplicateIdempotencyKeyError,
   IdempotencyConflictError,
+  UnknownWalletError,
   WalletCurrencyMismatchError,
   WalletPlayerMismatchError,
 } from './errors';
@@ -62,7 +62,7 @@ export class SubmitWagerTransactionUseCase {
     const { wallets, transactions, processor, ids, clock } = this.deps;
 
     const wallet = await wallets.findByIdForUpdate(command.walletId);
-    if (!wallet) throw new WalletNotFoundError(command.walletId);
+    if (!wallet) throw new UnknownWalletError(command.walletId);
 
     const existing = await transactions.findByIdempotencyKey(command.idempotencyKey);
     if (existing) return this.replay(existing, command.idempotencyKey, payloadHash);

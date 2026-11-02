@@ -45,6 +45,14 @@ export class WalletCurrencyMismatchError extends ApplicationError {
   }
 }
 
+export class UnknownWalletError extends ApplicationError {
+  readonly code = 'UNKNOWN_WALLET';
+
+  constructor(readonly walletId: string) {
+    super(`Wallet ${walletId} does not exist`);
+  }
+}
+
 export class TransactionNotFoundError extends ApplicationError {
   readonly code = 'TRANSACTION_NOT_FOUND';
 }
