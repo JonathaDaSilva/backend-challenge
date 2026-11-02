@@ -160,6 +160,8 @@ describe('POST /wallets/:walletId/reconciliation', () => {
       ]);
     expect(row?.consistent).toBe(false);
     expect((await walletBalance(db.owner, wallet.walletId)).balance).toBe('85.00');
+
+    await db.owner.em.fork().execute('update wallets set balance_amount = balance_amount - 5 where id = ?', [wallet.walletId]);
   });
 
   test(

@@ -1,5 +1,7 @@
 import { expect } from 'bun:test';
 import type { MikroORM } from '@mikro-orm/postgresql';
+import { findInvariantViolations } from '../../support/ledger-invariant';
+import { registerWallet } from '../../support/wallet-registry';
 
 export interface TestWallet {
   readonly walletId: string;
@@ -19,6 +21,7 @@ export async function createWallet(
   });
   expect(response.status).toBe(201);
   const body = (await response.json()) as { id: string };
+  registerWallet(body.id);
   return { walletId: body.id, playerId };
 }
 
@@ -98,15 +101,5 @@ export async function ledgerEntries(orm: MikroORM, walletId: string) {
 }
 
 export async function expectLedgerInvariant(orm: MikroORM, walletId: string): Promise<void> {
-  const [rebuilt] = await orm.em.fork().execute<{ balance: string }[]>(
-    `select coalesce(sum(case direction when 'CREDIT' then amount else -amount end), 0)::numeric(20,2)::text as balance
-       from wallet_ledger_entries where wallet_id = ?`,
-    [walletId],
-  );
-  const stored = await walletBalance(orm, walletId);
-  const versions = (await ledgerEntries(orm, walletId)).map((entry) => entry.wallet_version);
-
-  expect(rebuilt?.balance).toBe(stored.balance);
-  expect(versions).toEqual(versions.map((_, index) => index + 1));
-  expect(stored.version).toBe(Math.max(1, ...versions));
+  expect(await findInvariantViolations(orm.em.fork(), [walletId])).toEqual([]);
 }
