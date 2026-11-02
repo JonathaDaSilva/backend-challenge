@@ -7,11 +7,21 @@ interface IncomingRequest {
 
 const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'PATCH']);
 
+const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
+
+function hasBody(request: IncomingRequest): boolean {
+  const length = first(request.headers['content-length']);
+  return first(request.headers['transfer-encoding']) !== undefined || (length !== undefined && length !== '0');
+}
+
 export class JsonContentTypeMiddleware implements NestMiddleware {
   use(request: IncomingRequest, _response: unknown, next: () => void): void {
-    const contentType = request.headers['content-type'];
-    const value = Array.isArray(contentType) ? contentType[0] : contentType;
-    if (METHODS_WITH_BODY.has(request.method) && !value?.toLowerCase().startsWith('application/json')) {
+    const contentType = first(request.headers['content-type']);
+    if (
+      METHODS_WITH_BODY.has(request.method) &&
+      hasBody(request) &&
+      !contentType?.toLowerCase().startsWith('application/json')
+    ) {
       throw new UnsupportedMediaTypeException('Request body must be application/json');
     }
     next();

@@ -1,6 +1,6 @@
 import { IsolationLevel, TransactionPropagation } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
-import type { TransactionRunner } from '../../application/transaction-runner';
+import type { RunOptions, TransactionRunner } from '../../application/transaction-runner';
 import { isRetryableTransactionError } from './pg-errors';
 
 export interface TransactionRetryOptions {
@@ -23,7 +23,7 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
     private readonly timeouts: TransactionTimeouts = DEFAULT_TIMEOUTS,
   ) {}
 
-  async run<T>(work: () => Promise<T>): Promise<T> {
+  async run<T>(work: () => Promise<T>, options: RunOptions = {}): Promise<T> {
     // getContext(false): o runner também roda fora de requests HTTP (consumer SQS, workers).
     if (this.em.getContext(false).isInTransaction()) {
       return this.em.transactional(() => work(), { propagation: TransactionPropagation.REQUIRED });
@@ -39,7 +39,9 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
             ]);
             return work();
           },
-          { isolationLevel: IsolationLevel.READ_COMMITTED },
+          options.snapshot
+            ? { isolationLevel: IsolationLevel.REPEATABLE_READ, readOnly: true }
+            : { isolationLevel: IsolationLevel.READ_COMMITTED },
         );
       } catch (error) {
         if (attempt >= this.retry.maxAttempts || !isRetryableTransactionError(error)) throw error;
