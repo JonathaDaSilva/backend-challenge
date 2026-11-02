@@ -29,7 +29,7 @@ O role `wallet_app` é criado quando o volume do PostgreSQL nasce. Se o seu volu
 | `bun run docs:failures` | regenera a tabela de `failureCode` do `ARCHITECTURE.md` a partir do catálogo |
 | `docker compose down -v` | derruba tudo e apaga os dados |
 
-Health checks: `GET /health/live` e `GET /health/ready` (PostgreSQL + SQS).
+Health checks: `GET /health/live` e `GET /health/ready` (PostgreSQL + SQS). Métricas Prometheus: `GET /metrics`. Logs: JSON no stdout, nível em `LOG_LEVEL`.
 
 ### Estrutura
 

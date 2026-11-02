@@ -542,7 +542,59 @@ COMMIT
   - **registro** em `wallet_reconciliations`.
   A wallet não é tocada.
 - **`wallet_reconciliations`:** guarda cada execução, consistente ou não. É append-only, como o ledger: trigger `forbid_mutation` e grant só de `SELECT, INSERT` para o `wallet_app`. CHECKs garantem `difference = stored − calculated` e `consistent ⇔ difference = 0`. Uma divergência fica registrada no banco, e não só num log que pode girar.
-- **Métricas e log como ports:** `Metrics` e `StructuredLogger` (`src/shared/application/observability.ts`) têm por enquanto implementação em memória e via Logger do Nest. A #14 troca as implementações (logs JSON, exposição de métricas) sem mexer em quem chama.
+- **Métricas e log como ports:** `Metrics` e `StructuredLogger` (`src/shared/application/observability.ts`); implementações em [Observabilidade](#observabilidade).
+
+## Observabilidade
+
+### Logs JSON
+
+**`JsonLogger`** (`src/shared/infrastructure/json-logger.ts`), sem dependência externa, escreve **uma linha JSON por evento** no stdout. Ele implementa ao mesmo tempo o `LoggerService` do Nest e o port `StructuredLogger`, então os logs do framework (bootstrap, erros do filtro, avisos do consumer) e os da aplicação saem no mesmo formato. O nível vem de `LOG_LEVEL` (`debug`/`info`/`warn`/`error`, padrão `info`).
+
+**Contexto de execução, sem passar parâmetros.** Um AsyncLocalStorage (`async-correlation-context.ts`) guarda os campos da execução corrente. Cada linha de log sai com eles:
+
+| Borda | Abre o contexto com | Anotado no caminho |
+|---|---|---|
+| HTTP (`CorrelationMiddleware`) | `correlationId` (do `X-Correlation-Id` ou gerado), `source: http` | `providerId`, `walletId`, `transactionId` (use case) |
+| SQS (consumer) | `correlationId = messageId`, `messageId`, `source: sqs` | idem |
+| Schedulers | `correlationId` por execução, `source: pending_reference` / `outbox` | idem |
+
+**Política de dados:**
+- nunca se loga corpo de requisição nem de mensagem;
+- os logs de rotina levam ids, `kind`, `status` e `failureCode`, e **nenhum valor ou saldo**;
+- como rede de segurança, o logger substitui por `[redacted]`, em qualquer profundidade, as chaves `money`, `amount`, `balance`, `balanceBefore`, `balanceAfter`, `initialBalance`, `body` e `payload`;
+- **exceção documentada:** o log de divergência da reconciliação mantém `storedBalance`, `calculatedBalance` e `difference`, porque sem eles a divergência não é investigável.
+
+Um teste faz uma aposta de `37.91` e confere que nem esse valor nem o saldo resultante aparecem em nenhuma linha.
+
+**Linhas que existem hoje:**
+- `http request`: método, **padrão da rota** (`/wallets/:walletId`, nunca a URL com ids), status e `durationMs`. Health e `/metrics` não geram log, para não poluir;
+- `wager transaction settled`: toda transação que chega a um estado final, em qualquer entrada;
+- decisões do consumer (retry, DLQ, rejeição);
+- divergências de reconciliação;
+- erros inesperados, com stack.
+
+### Métricas (`GET /metrics`, formato Prometheus)
+
+`PromMetrics` (prom-client) usa um registry por instância da aplicação, não o global. As métricas são declaradas num catálogo fixo, e um nome desconhecido não compila (`MetricName`).
+
+| README | Métrica | Labels |
+|---|---|---|
+| transações por status | `wager_transactions_total` | `kind`, `status`, `source` |
+| duplicatas detectadas | `wager_duplicates_total` | `type`: `idempotent_replay` / `inbox_duplicate` |
+| retries | `sqs_message_retries_total`, `db_transaction_retries_total` | `failure_code` / `reason` |
+| DLQ | `sqs_dead_letters_total` | `failure_code` |
+| conflitos de lock | `db_lock_conflicts_total` | `reason`: `lock_timeout` / `deadlock` / `serialization` |
+| outbox lag | `outbox_pending_events`, `outbox_oldest_pending_age_seconds` (gauges lidos do banco na coleta), `outbox_published_total`, `outbox_publish_failures_total` | — |
+| latência | `http_request_duration_seconds`, `wager_processing_duration_seconds` (histogramas) | `method`, `route`, `status` / `source`, `kind` |
+| (reconciliação) | `wallet_reconciliation_divergences_total` | `currency` |
+
+**Cardinalidade:** nenhum label carrega id. Ids ficam nos logs, contagens nas métricas, e um teste confere que o scrape não contém nenhum UUID. Assim como os health checks, o `/metrics` não exige autenticação; em produção, deve ficar restrito à rede interna.
+
+### Health checks
+
+- `GET /health/live`: o processo responde.
+- `GET /health/ready`: `select 1` no PostgreSQL, como `wallet_app`, e `GetQueueUrl` no SQS, com 2 s de timeout cada; 503 se algum falhar.
+- **Drenagem no shutdown:** assim que o SIGTERM inicia o desligamento (`beforeApplicationShutdown`), o `ready` passa a responder 503 com `status: shutting_down`. Isso acontece antes de o consumer e os schedulers pararem, então o balanceador tira a instância da rotação enquanto ela ainda termina o trabalho em andamento. Um teste mantém uma mensagem em processamento, presa num lock de wallet, durante o desligamento, e vê o 503.
 
 ## Pendente (próximas issues)
 
