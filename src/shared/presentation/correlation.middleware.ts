@@ -1,5 +1,5 @@
 import type { NestMiddleware } from '@nestjs/common';
-import { runWithCorrelation } from '../infrastructure/async-correlation-context';
+import { runWithContext } from '../infrastructure/async-correlation-context';
 
 export const CORRELATION_HEADER = 'x-correlation-id';
 
@@ -19,6 +19,6 @@ export class CorrelationMiddleware implements NestMiddleware {
     const received = Array.isArray(header) ? header[0] : header;
     const correlationId = received && VALID_ID.test(received) ? received : Bun.randomUUIDv7();
     response.setHeader(CORRELATION_HEADER, correlationId);
-    runWithCorrelation(correlationId, next);
+    runWithContext({ correlationId, source: 'http' }, next);
   }
 }

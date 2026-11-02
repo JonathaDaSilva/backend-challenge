@@ -20,3 +20,19 @@ export function isTransientDatabaseError(error: unknown): boolean {
   const code = sqlState(error);
   return code !== undefined && TRANSIENT_SQLSTATES.has(code);
 }
+
+const LOCK_CONFLICT_REASONS: Record<string, string> = {
+  '40001': 'serialization',
+  '40P01': 'deadlock',
+  '55P03': 'lock_timeout',
+};
+
+export function lockConflictReason(error: unknown): string | undefined {
+  const code = sqlState(error);
+  return code === undefined ? undefined : LOCK_CONFLICT_REASONS[code];
+}
+
+export function retryReason(error: unknown): string {
+  if (error instanceof ConcurrentModificationError) return 'concurrent_modification';
+  return lockConflictReason(error) ?? 'unknown';
+}

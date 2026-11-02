@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { RECONCILIATION_DIVERGENCE_METRIC } from '../../../src/modules/wallet/application/reconcile-wallet.use-case';
-import { METRICS } from '../../../src/shared/application/observability';
-import type { InMemoryMetrics } from '../../../src/shared/infrastructure/in-memory-metrics';
+import { MetricNames } from '../../../src/shared/application/observability';
+import { PromMetrics } from '../../../src/shared/infrastructure/prom-metrics';
 import { type StartedApp, startApp } from '../support/app';
 import { initTestDatabases, type TestDatabases } from '../support/database';
 import { expectViolation } from '../support/schema-fixtures';
@@ -138,8 +137,8 @@ describe('POST /wallets/:walletId/reconciliation', () => {
   });
 
   test('a divergence is reported, counted and recorded, but never corrected', async () => {
-    const metrics = app.get<InMemoryMetrics>(METRICS);
-    const before = metrics.value(RECONCILIATION_DIVERGENCE_METRIC, { currency: 'BRL' });
+    const metrics = app.get<PromMetrics>(PromMetrics);
+    const before = await metrics.value(MetricNames.ReconciliationDivergences, { currency: 'BRL' });
     const wallet = await createWallet(app.url, '100.00');
     await submitJson(app.url, wallet, { amount: '20.00' });
     await db.owner.em.fork().execute('update wallets set balance_amount = balance_amount + 5 where id = ?', [wallet.walletId]);
@@ -153,7 +152,7 @@ describe('POST /wallets/:walletId/reconciliation', () => {
       consistent: false,
       checkedEntries: 2,
     });
-    expect(metrics.value(RECONCILIATION_DIVERGENCE_METRIC, { currency: 'BRL' })).toBe(before + 1);
+    expect(await metrics.value(MetricNames.ReconciliationDivergences, { currency: 'BRL' })).toBe(before + 1);
     const [row] = await db.owner.em
       .fork()
       .execute<{ consistent: boolean }[]>('select consistent from wallet_reconciliations where id = ?', [

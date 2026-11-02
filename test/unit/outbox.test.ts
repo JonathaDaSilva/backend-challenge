@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { WalletBalanceChanged } from '../../src/modules/wagering/application/events';
 import { Wallet } from '../../src/modules/wallet/domain/wallet';
+import type { Metrics } from '../../src/shared/application/observability';
 import type { EventPublisher, OutboxRepository } from '../../src/shared/application/outbox';
 import { OutboxBackoff, OutboxPublisher } from '../../src/shared/application/outbox-publisher';
 import type { TransactionRunner } from '../../src/shared/application/transaction-runner';
@@ -95,6 +96,7 @@ describe('OutboxBackoff', () => {
 describe('OutboxPublisher', () => {
   const runner: TransactionRunner = { run: (work) => work() };
   const backoff = new OutboxBackoff({ baseDelayMs: 1000, maxDelayMs: 300_000 }, () => 1);
+  const metrics: Metrics = { increment: () => undefined, observe: () => undefined };
 
   function setup(publisher: EventPublisher) {
     const messages = ['a', 'b', 'c'].map((id) =>
@@ -122,8 +124,9 @@ describe('OutboxPublisher', () => {
         saved.push(...batch);
       },
       nextDueAt: async () => undefined,
+      stats: async () => ({ pending: 0, oldestPendingAgeSeconds: 0 }),
     };
-    return { saved, publisher: new OutboxPublisher({ outbox, publisher, runner, backoff, batchSize: 10 }) };
+    return { saved, publisher: new OutboxPublisher({ outbox, publisher, runner, backoff, batchSize: 10, metrics }) };
   }
 
   test('marks published what the destination accepted and reschedules the rest', async () => {

@@ -1,5 +1,7 @@
 import type { Clock } from '../../../shared/application/clock';
+import type { CorrelationContext } from '../../../shared/application/correlation';
 import type { IdGenerator } from '../../../shared/application/id-generator';
+import { MetricNames, type Metrics } from '../../../shared/application/observability';
 import type { TransactionRunner } from '../../../shared/application/transaction-runner';
 import type { Money } from '../../../shared/domain/money';
 import type { WalletRepository } from '../../wallet/application/ports';
@@ -40,13 +42,18 @@ export interface SubmitWagerTransactionDependencies {
   readonly runner: TransactionRunner;
   readonly ids: IdGenerator;
   readonly clock: Clock;
+  readonly metrics: Metrics;
+  readonly context: CorrelationContext;
 }
 
 export class SubmitWagerTransactionUseCase {
   constructor(private readonly deps: SubmitWagerTransactionDependencies) {}
 
   async execute(command: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
+    const { metrics, context } = this.deps;
+    context.annotate({ providerId: command.providerId, walletId: command.walletId });
     const payloadHash = wagerPayloadHash({ ...command, money: command.money.toJSON() });
+    const started = performance.now();
 
     try {
       return await this.deps.runner.run(() => this.submit(command, payloadHash));
@@ -55,6 +62,12 @@ export class SubmitWagerTransactionUseCase {
       const existing = await this.deps.transactions.findByIdempotencyKey(command.idempotencyKey);
       if (!existing) throw error;
       return this.replay(existing, command.idempotencyKey, payloadHash);
+    } finally {
+      metrics.observe(
+        MetricNames.WagerProcessingDuration,
+        { source: context.value('source') ?? 'unknown', kind: command.kind },
+        (performance.now() - started) / 1000,
+      );
     }
   }
 
@@ -74,6 +87,7 @@ export class SubmitWagerTransactionUseCase {
 
     const at = clock.now();
     const transaction = WagerTransaction.create({ ...command, id: ids.next(), payloadHash, at });
+    this.deps.context.annotate({ transactionId: transaction.id });
     const expectedVersion = wallet.version;
     const decision = await processor.decide(transaction, wallet, at);
     await processor.persistNew(transaction, wallet, expectedVersion, decision, at);
@@ -83,7 +97,9 @@ export class SubmitWagerTransactionUseCase {
   }
 
   private replay(existing: WagerTransaction, idempotencyKey: string, payloadHash: string): SubmitWagerTransactionResult {
+    this.deps.context.annotate({ transactionId: existing.id });
     if (!existing.matchesPayload(payloadHash)) throw new IdempotencyConflictError(idempotencyKey, existing.id);
+    this.deps.metrics.increment(MetricNames.WagerDuplicates, { type: 'idempotent_replay' });
     return { transaction: existing, idempotentReplay: true };
   }
 }

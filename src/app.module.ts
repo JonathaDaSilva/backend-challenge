@@ -8,6 +8,7 @@ import { createMikroOrmConfig } from './shared/infrastructure/database/mikro-orm
 import { PersistenceModule } from './shared/infrastructure/database/persistence.module';
 import { InfrastructureModule } from './shared/infrastructure/infrastructure.module';
 import { OutboxModule } from './shared/infrastructure/outbox.module';
+import { AccessLogMiddleware } from './shared/presentation/access-log.middleware';
 import { CorrelationMiddleware } from './shared/presentation/correlation.middleware';
 import { ErrorFilter } from './shared/presentation/error.filter';
 import { JsonContentTypeMiddleware } from './shared/presentation/json-content-type.middleware';
@@ -28,6 +29,6 @@ import { JsonContentTypeMiddleware } from './shared/presentation/json-content-ty
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(CorrelationMiddleware, JsonContentTypeMiddleware).forRoutes('*');
+    consumer.apply(CorrelationMiddleware, AccessLogMiddleware, JsonContentTypeMiddleware).forRoutes('*');
   }
 }

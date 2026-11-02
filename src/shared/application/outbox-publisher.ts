@@ -1,4 +1,5 @@
 import type { RetryBackoff } from '../domain/outbox-message';
+import { MetricNames, type Metrics } from './observability';
 import type { EventPublisher, OutboxRepository } from './outbox';
 import type { TransactionRunner } from './transaction-runner';
 
@@ -25,6 +26,7 @@ export interface OutboxPublisherDependencies {
   readonly runner: TransactionRunner;
   readonly backoff: RetryBackoff;
   readonly batchSize: number;
+  readonly metrics: Metrics;
 }
 
 export class OutboxPublisher {
@@ -59,6 +61,9 @@ export class OutboxPublisher {
       else message.markPublished(now);
     }
     await this.deps.outbox.save(due);
+    const failures = due.filter((message) => failed.has(message.id)).length;
+    if (due.length > failures) this.deps.metrics.increment(MetricNames.OutboxPublished, {}, due.length - failures);
+    if (failures > 0) this.deps.metrics.increment(MetricNames.OutboxPublishFailures, {}, failures);
     return due.length;
   }
 }

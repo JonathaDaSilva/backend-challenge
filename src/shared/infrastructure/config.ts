@@ -1,3 +1,4 @@
+import type { LogLevel } from './json-logger';
 function required(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
   if (value === undefined || value === '') {
@@ -13,6 +14,14 @@ function port(name: string, fallback: string): number {
     throw new Error(`Invalid port in ${name}: ${raw}`);
   }
   return value;
+}
+
+const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
+
+function logLevel(name: string, fallback: LogLevel): LogLevel {
+  const raw = required(name, fallback) as LogLevel;
+  if (!LOG_LEVELS.includes(raw)) throw new Error(`Invalid ${name}: ${raw}`);
+  return raw;
 }
 
 function positiveInt(name: string, fallback: string): number {
@@ -38,6 +47,7 @@ function currencyList(name: string, fallback: string): readonly string[] {
 
 export interface AppConfig {
   readonly port: number;
+  readonly logLevel: LogLevel;
   readonly databaseUrl: string;
   readonly migrationDatabaseUrl: string;
   readonly supportedCurrencies: readonly string[];
@@ -83,6 +93,7 @@ export interface AppConfig {
 export function loadConfig(): AppConfig {
   return {
     port: port('PORT', '3000'),
+    logLevel: logLevel('LOG_LEVEL', 'info'),
     databaseUrl: required('DATABASE_URL', 'postgres://wallet_app:wallet_app@localhost:5432/wallet'),
     migrationDatabaseUrl: required('MIGRATION_DATABASE_URL', 'postgres://wallet:wallet@localhost:5432/wallet'),
     supportedCurrencies: currencyList('SUPPORTED_CURRENCIES', 'BRL'),

@@ -1,5 +1,7 @@
+import type { CorrelationContext } from '../../../shared/application/correlation';
 import type { EventRecorder } from '../../../shared/application/event-recorder';
 import type { IdGenerator } from '../../../shared/application/id-generator';
+import { MetricNames, type Metrics, type StructuredLogger } from '../../../shared/application/observability';
 import type { SerializableEvent } from '../../../shared/domain/outbox-message';
 import type { LedgerRepository, WalletRepository } from '../../wallet/application/ports';
 import { InsufficientFundsError } from '../../wallet/domain/errors';
@@ -29,6 +31,9 @@ export interface WagerProcessorDependencies {
   readonly ids: IdGenerator;
   readonly policy: PendingReferencePolicy;
   readonly events: EventRecorder;
+  readonly metrics: Metrics;
+  readonly logger: StructuredLogger;
+  readonly context: CorrelationContext;
 }
 
 // Todos os métodos assumem que a wallet já está travada pelo chamador (SELECT … FOR UPDATE).
@@ -155,5 +160,19 @@ export class WagerProcessor {
     }
     if (decision.entry) recorded.push(WalletBalanceChanged.from(wallet, decision.entry, events.context(transaction.id)));
     await events.record(recorded);
+    this.observe(transaction);
+  }
+
+  private observe(transaction: WagerTransaction): void {
+    const source = this.deps.context.value('source') ?? 'unknown';
+    this.deps.metrics.increment(MetricNames.WagerTransactions, { kind: transaction.kind, status: transaction.status, source });
+    this.deps.logger.info('wager transaction settled', {
+      transactionId: transaction.id,
+      walletId: transaction.walletId,
+      providerId: transaction.providerId,
+      kind: transaction.kind,
+      status: transaction.status,
+      failureCode: transaction.failureCode,
+    });
   }
 }

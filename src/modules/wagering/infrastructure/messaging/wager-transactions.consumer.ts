@@ -11,7 +11,8 @@ import {
 import { Logger } from '@nestjs/common';
 import { DuplicateMessageError, InvalidPayloadError } from '../../../../shared/application/errors';
 import type { CatalogCode } from '../../../../shared/application/failure-catalog';
-import { runWithCorrelation } from '../../../../shared/infrastructure/async-correlation-context';
+import { MetricNames, type Metrics } from '../../../../shared/application/observability';
+import { runWithContext } from '../../../../shared/infrastructure/async-correlation-context';
 import { classifyError } from '../../../../shared/infrastructure/error-classification';
 import { parseWith } from '../../../../shared/presentation/validation';
 import type { ProcessWagerMessageUseCase, WagerMessage } from '../../application/process-wager-message.use-case';
@@ -49,6 +50,7 @@ export class WagerTransactionsConsumer {
     private readonly processMessage: ProcessWagerMessageUseCase,
     private readonly recordFailed: RecordFailedTransactionUseCase,
     private readonly options: WagerConsumerOptions,
+    private readonly metrics: Metrics,
   ) {}
 
   start(): void {
@@ -125,10 +127,15 @@ export class WagerTransactionsConsumer {
     }
 
     try {
-      await runWithCorrelation(parsed.messageId, () => this.processMessage.execute(parsed));
+      await runWithContext({ correlationId: parsed.messageId, messageId: parsed.messageId, source: 'sqs' }, () =>
+        this.processMessage.execute(parsed),
+      );
       return this.ack(message);
     } catch (error) {
-      if (error instanceof DuplicateMessageError) return this.ack(message);
+      if (error instanceof DuplicateMessageError) {
+        this.metrics.increment(MetricNames.WagerDuplicates, { type: 'inbox_duplicate' });
+        return this.ack(message);
+      }
       const { code, definition } = classifyError(error);
 
       switch (definition.category) {
@@ -180,6 +187,7 @@ export class WagerTransactionsConsumer {
 
   private async retryLater(message: Message, receiveCount: number, code: CatalogCode): Promise<MessageOutcome> {
     const seconds = this.backoffSeconds(receiveCount);
+    this.metrics.increment(MetricNames.SqsMessageRetries, { failure_code: code });
     this.logger.warn(`message ${message.MessageId} failed with ${code}; attempt ${receiveCount}, retry in ${seconds}s`);
     await this.setVisibility(message, seconds);
     return 'retrying';
@@ -197,6 +205,7 @@ export class WagerTransactionsConsumer {
 
   private async deadLetter(message: Message, failureCode: CatalogCode, receiveCount: number): Promise<MessageOutcome> {
     this.logger.warn(`message ${message.MessageId} sent to DLQ: ${failureCode}`);
+    this.metrics.increment(MetricNames.SqsDeadLetters, { failure_code: failureCode });
     await this.sqs.send(
       new SendMessageCommand({
         QueueUrl: this.dlqUrl,

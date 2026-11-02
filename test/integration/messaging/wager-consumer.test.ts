@@ -8,6 +8,8 @@ import {
 import { WagerProcessor } from '../../../src/modules/wagering/application/wager-processor';
 import { WALLET_REPOSITORY, type WalletRepository } from '../../../src/modules/wallet/application/ports';
 import { CLOCK, type Clock } from '../../../src/shared/application/clock';
+import { CORRELATION_CONTEXT, type CorrelationContext } from '../../../src/shared/application/correlation';
+import { METRICS, type Metrics } from '../../../src/shared/application/observability';
 import { ID_GENERATOR, type IdGenerator } from '../../../src/shared/application/id-generator';
 import { TRANSACTION_RUNNER, type TransactionRunner } from '../../../src/shared/application/transaction-runner';
 import { type StartedApp, startApp, withConfig } from '../support/app';
@@ -51,7 +53,16 @@ async function startConsumer(sqsOverrides: Parameters<typeof consumerConfig>[1] 
 function wrapSubmit(wrap: (real: SubmitWagerTransactionUseCase) => Pick<SubmitWagerTransactionUseCase, 'execute'>): Configure {
   return (builder) =>
     builder.overrideProvider(SubmitWagerTransactionUseCase).useFactory({
-      inject: [WALLET_REPOSITORY, WAGER_TRANSACTION_REPOSITORY, WagerProcessor, TRANSACTION_RUNNER, ID_GENERATOR, CLOCK],
+      inject: [
+        WALLET_REPOSITORY,
+        WAGER_TRANSACTION_REPOSITORY,
+        WagerProcessor,
+        TRANSACTION_RUNNER,
+        ID_GENERATOR,
+        CLOCK,
+        METRICS,
+        CORRELATION_CONTEXT,
+      ],
       factory: (
         wallets: WalletRepository,
         transactions: WagerTransactionRepository,
@@ -59,7 +70,9 @@ function wrapSubmit(wrap: (real: SubmitWagerTransactionUseCase) => Pick<SubmitWa
         runner: TransactionRunner,
         ids: IdGenerator,
         clock: Clock,
-      ) => wrap(new SubmitWagerTransactionUseCase({ wallets, transactions, processor, runner, ids, clock })),
+        metrics: Metrics,
+        context: CorrelationContext,
+      ) => wrap(new SubmitWagerTransactionUseCase({ wallets, transactions, processor, runner, ids, clock, metrics, context })),
     });
 }
 

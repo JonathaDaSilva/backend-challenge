@@ -10,9 +10,17 @@ import { CLOCK, type Clock } from '../../shared/application/clock';
 import { EventRecorder } from '../../shared/application/event-recorder';
 import { ID_GENERATOR, type IdGenerator } from '../../shared/application/id-generator';
 import { INBOX_REPOSITORY, type InboxRepository } from '../../shared/application/inbox';
+import { CORRELATION_CONTEXT, type CorrelationContext } from '../../shared/application/correlation';
+import {
+  METRICS,
+  type Metrics,
+  STRUCTURED_LOGGER,
+  type StructuredLogger,
+} from '../../shared/application/observability';
 import { TRANSACTION_RUNNER, type TransactionRunner } from '../../shared/application/transaction-runner';
 import type { AppConfig } from '../../shared/infrastructure/config';
 import { DeadlineScheduler } from '../../shared/infrastructure/database/deadline-scheduler';
+import { LifecycleState } from '../../shared/infrastructure/lifecycle-state';
 import { APP_CONFIG, SQS_CLIENT } from '../../shared/infrastructure/tokens';
 import { LEDGER_REPOSITORY, type LedgerRepository, WALLET_REPOSITORY, type WalletRepository } from '../wallet/application/ports';
 import { GetWagerTransactionUseCase } from './application/get-wager-transaction.use-case';
@@ -45,6 +53,9 @@ export const PENDING_REFERENCE_SCHEDULER = Symbol('PENDING_REFERENCE_SCHEDULER')
         ID_GENERATOR,
         PendingReferencePolicy,
         EventRecorder,
+        METRICS,
+        STRUCTURED_LOGGER,
+        CORRELATION_CONTEXT,
       ],
       useFactory: (
         wallets: WalletRepository,
@@ -53,11 +64,23 @@ export const PENDING_REFERENCE_SCHEDULER = Symbol('PENDING_REFERENCE_SCHEDULER')
         ids: IdGenerator,
         policy: PendingReferencePolicy,
         events: EventRecorder,
-      ) => new WagerProcessor({ wallets, ledger, transactions, ids, policy, events }),
+        metrics: Metrics,
+        logger: StructuredLogger,
+        context: CorrelationContext,
+      ) => new WagerProcessor({ wallets, ledger, transactions, ids, policy, events, metrics, logger, context }),
     },
     {
       provide: SubmitWagerTransactionUseCase,
-      inject: [WALLET_REPOSITORY, WAGER_TRANSACTION_REPOSITORY, WagerProcessor, TRANSACTION_RUNNER, ID_GENERATOR, CLOCK],
+      inject: [
+        WALLET_REPOSITORY,
+        WAGER_TRANSACTION_REPOSITORY,
+        WagerProcessor,
+        TRANSACTION_RUNNER,
+        ID_GENERATOR,
+        CLOCK,
+        METRICS,
+        CORRELATION_CONTEXT,
+      ],
       useFactory: (
         wallets: WalletRepository,
         transactions: WagerTransactionRepository,
@@ -65,7 +88,9 @@ export const PENDING_REFERENCE_SCHEDULER = Symbol('PENDING_REFERENCE_SCHEDULER')
         runner: TransactionRunner,
         ids: IdGenerator,
         clock: Clock,
-      ) => new SubmitWagerTransactionUseCase({ wallets, transactions, processor, runner, ids, clock }),
+        metrics: Metrics,
+        context: CorrelationContext,
+      ) => new SubmitWagerTransactionUseCase({ wallets, transactions, processor, runner, ids, clock, metrics, context }),
     },
     {
       provide: PendingReferenceWorker,
@@ -124,18 +149,21 @@ export const PENDING_REFERENCE_SCHEDULER = Symbol('PENDING_REFERENCE_SCHEDULER')
     },
     {
       provide: WagerTransactionsConsumer,
-      inject: [SQS_CLIENT, ProcessWagerMessageUseCase, RecordFailedTransactionUseCase, APP_CONFIG],
+      inject: [SQS_CLIENT, ProcessWagerMessageUseCase, RecordFailedTransactionUseCase, APP_CONFIG, METRICS],
       useFactory: (
         sqs: SQSClient,
         processMessage: ProcessWagerMessageUseCase,
         recordFailed: RecordFailedTransactionUseCase,
         config: AppConfig,
+        metrics: Metrics,
       ) =>
-        new WagerTransactionsConsumer(sqs, processMessage, recordFailed, {
-          ...config.sqs,
-          queueName: config.sqs.wagerQueue,
-          dlqName: config.sqs.wagerDlq,
-        }),
+        new WagerTransactionsConsumer(
+          sqs,
+          processMessage,
+          recordFailed,
+          { ...config.sqs, queueName: config.sqs.wagerQueue, dlqName: config.sqs.wagerDlq },
+          metrics,
+        ),
     },
     {
       provide: GetWagerTransactionUseCase,
@@ -150,6 +178,7 @@ export class WageringModule implements OnApplicationBootstrap, BeforeApplication
     @Inject(PENDING_REFERENCE_SCHEDULER) private readonly scheduler: DeadlineScheduler,
     @Inject(WagerTransactionsConsumer) private readonly consumer: WagerTransactionsConsumer,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(LifecycleState) private readonly lifecycle: LifecycleState,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -158,6 +187,7 @@ export class WageringModule implements OnApplicationBootstrap, BeforeApplication
   }
 
   async beforeApplicationShutdown(): Promise<void> {
+    this.lifecycle.beginShutdown();
     await this.consumer.stop();
   }
 

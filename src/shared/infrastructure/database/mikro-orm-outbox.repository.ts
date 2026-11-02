@@ -1,6 +1,6 @@
 import { LockMode } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
-import type { OutboxRepository } from '../../application/outbox';
+import type { OutboxRepository, OutboxStats } from '../../application/outbox';
 import { OutboxMessage } from '../../domain/outbox-message';
 import { OutboxMessageRecord } from './outbox.record';
 
@@ -60,6 +60,14 @@ export class MikroOrmOutboxRepository implements OutboxRepository {
         },
       );
     }
+  }
+
+  async stats(now: Date): Promise<OutboxStats> {
+    const [row] = await this.em.execute<{ pending: number; oldest: Date | string | null }[]>(
+      'select count(*)::int as pending, min(occurred_at) as oldest from outbox_messages where published_at is null',
+    );
+    const oldest = row?.oldest ? new Date(row.oldest).getTime() : now.getTime();
+    return { pending: row?.pending ?? 0, oldestPendingAgeSeconds: Math.max(0, (now.getTime() - oldest) / 1000) };
   }
 
   async nextDueAt(): Promise<Date | undefined> {

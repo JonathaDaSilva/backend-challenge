@@ -3,6 +3,7 @@ import type { SQSClient } from '@aws-sdk/client-sqs';
 import type { ProcessWagerMessageUseCase } from '../../../src/modules/wagering/application/process-wager-message.use-case';
 import type { RecordFailedTransactionUseCase } from '../../../src/modules/wagering/application/record-failed-transaction.use-case';
 import { WagerTransactionsConsumer } from '../../../src/modules/wagering/infrastructure/messaging/wager-transactions.consumer';
+import type { Metrics } from '../../../src/shared/application/observability';
 import { loadConfig } from '../../../src/shared/infrastructure/config';
 
 const { sqs } = loadConfig();
@@ -11,6 +12,7 @@ const consumer = new WagerTransactionsConsumer(
   {} as ProcessWagerMessageUseCase,
   {} as RecordFailedTransactionUseCase,
   { ...sqs, queueName: 'q.fifo', dlqName: 'dlq.fifo' },
+  {} as Metrics,
 );
 
 describe('consumer backoff', () => {
@@ -30,6 +32,7 @@ describe('consumer backoff', () => {
       {} as ProcessWagerMessageUseCase,
       {} as RecordFailedTransactionUseCase,
       { ...sqs, queueName: 'q.fifo', dlqName: 'dlq.fifo', backoffBaseMs: 100 },
+      {} as Metrics,
     );
     expect(fast.backoffSeconds(1)).toBe(1);
   });

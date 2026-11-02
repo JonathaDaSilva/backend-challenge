@@ -6,6 +6,12 @@ export interface OutboxRepository {
   claimDue(now: Date, limit: number): Promise<OutboxMessage[]>;
   save(messages: readonly OutboxMessage[]): Promise<void>;
   nextDueAt(): Promise<Date | undefined>;
+  stats(now: Date): Promise<OutboxStats>;
+}
+
+export interface OutboxStats {
+  readonly pending: number;
+  readonly oldestPendingAgeSeconds: number;
 }
 
 export interface PublishResult {

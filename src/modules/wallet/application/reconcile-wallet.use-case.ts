@@ -1,11 +1,9 @@
 import type { Clock } from '../../../shared/application/clock';
 import type { IdGenerator } from '../../../shared/application/id-generator';
-import type { Metrics, StructuredLogger } from '../../../shared/application/observability';
+import { MetricNames, type Metrics, type StructuredLogger } from '../../../shared/application/observability';
 import type { TransactionRunner } from '../../../shared/application/transaction-runner';
 import { WalletNotFoundError } from './errors';
 import type { LedgerQuery, ReconciliationRepository, WalletReconciliation, WalletRepository } from './ports';
-
-export const RECONCILIATION_DIVERGENCE_METRIC = 'wallet_reconciliation_divergences_total';
 
 export interface ReconcileWalletDependencies {
   readonly wallets: WalletRepository;
@@ -47,7 +45,7 @@ export class ReconcileWalletUseCase {
     await runner.run(() => this.deps.reconciliations.insert(reconciliation));
 
     if (!reconciliation.consistent) {
-      this.deps.metrics.increment(RECONCILIATION_DIVERGENCE_METRIC, { currency: wallet.currency });
+      this.deps.metrics.increment(MetricNames.ReconciliationDivergences, { currency: wallet.currency });
       this.deps.logger.warn('wallet reconciliation found a divergence', {
         walletId,
         reconciliationId: reconciliation.id,

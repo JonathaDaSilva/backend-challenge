@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { Client } from 'pg';
 import type { Clock } from '../../application/clock';
-import { runWithCorrelation } from '../async-correlation-context';
+import { runWithContext } from '../async-correlation-context';
 
 export interface DeadlineJob {
   processDue(now: Date): Promise<unknown>;
@@ -63,7 +63,9 @@ export class DeadlineScheduler {
     try {
       do {
         this.rerunRequested = false;
-        await runWithCorrelation(Bun.randomUUIDv7(), () => this.job.processDue(this.clock.now()));
+        await runWithContext({ correlationId: Bun.randomUUIDv7(), source: this.channel }, () =>
+          this.job.processDue(this.clock.now()),
+        );
       } while (this.rerunRequested && !this.stopped);
       await this.rescheduleFromDatabase();
     } catch (error) {

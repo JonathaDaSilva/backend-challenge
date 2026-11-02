@@ -1,7 +1,8 @@
 import { IsolationLevel, TransactionPropagation } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
+import { MetricNames, type Metrics } from '../../application/observability';
 import type { RunOptions, TransactionRunner } from '../../application/transaction-runner';
-import { isRetryableTransactionError } from './pg-errors';
+import { isRetryableTransactionError, lockConflictReason, retryReason } from './pg-errors';
 
 export interface TransactionRetryOptions {
   readonly maxAttempts: number;
@@ -21,6 +22,7 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
     private readonly em: EntityManager,
     private readonly retry: TransactionRetryOptions = DEFAULT_RETRY,
     private readonly timeouts: TransactionTimeouts = DEFAULT_TIMEOUTS,
+    private readonly metrics?: Metrics,
   ) {}
 
   async run<T>(work: () => Promise<T>, options: RunOptions = {}): Promise<T> {
@@ -44,7 +46,10 @@ export class MikroOrmTransactionRunner implements TransactionRunner {
             : { isolationLevel: IsolationLevel.READ_COMMITTED },
         );
       } catch (error) {
+        const conflict = lockConflictReason(error);
+        if (conflict) this.metrics?.increment(MetricNames.DbLockConflicts, { reason: conflict });
         if (attempt >= this.retry.maxAttempts || !isRetryableTransactionError(error)) throw error;
+        this.metrics?.increment(MetricNames.DbTransactionRetries, { reason: retryReason(error) });
         await Bun.sleep(this.backoff(attempt));
       }
     }
