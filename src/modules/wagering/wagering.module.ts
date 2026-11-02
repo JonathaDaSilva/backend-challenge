@@ -7,10 +7,12 @@ import {
   type OnApplicationShutdown,
 } from '@nestjs/common';
 import { CLOCK, type Clock } from '../../shared/application/clock';
+import { EventRecorder } from '../../shared/application/event-recorder';
 import { ID_GENERATOR, type IdGenerator } from '../../shared/application/id-generator';
 import { INBOX_REPOSITORY, type InboxRepository } from '../../shared/application/inbox';
 import { TRANSACTION_RUNNER, type TransactionRunner } from '../../shared/application/transaction-runner';
 import type { AppConfig } from '../../shared/infrastructure/config';
+import { DeadlineScheduler } from '../../shared/infrastructure/database/deadline-scheduler';
 import { APP_CONFIG, SQS_CLIENT } from '../../shared/infrastructure/tokens';
 import { LEDGER_REPOSITORY, type LedgerRepository, WALLET_REPOSITORY, type WalletRepository } from '../wallet/application/ports';
 import { GetWagerTransactionUseCase } from './application/get-wager-transaction.use-case';
@@ -22,8 +24,9 @@ import { RecordFailedTransactionUseCase } from './application/record-failed-tran
 import { SubmitWagerTransactionUseCase } from './application/submit-wager-transaction.use-case';
 import { WagerProcessor } from './application/wager-processor';
 import { WagerTransactionsConsumer } from './infrastructure/messaging/wager-transactions.consumer';
-import { PendingReferenceScheduler } from './infrastructure/pending-reference-scheduler';
 import { WageringController } from './presentation/wagering.controller';
+
+export const PENDING_REFERENCE_SCHEDULER = Symbol('PENDING_REFERENCE_SCHEDULER');
 
 @Module({
   controllers: [WageringController],
@@ -35,14 +38,22 @@ import { WageringController } from './presentation/wagering.controller';
     },
     {
       provide: WagerProcessor,
-      inject: [WALLET_REPOSITORY, LEDGER_REPOSITORY, WAGER_TRANSACTION_REPOSITORY, ID_GENERATOR, PendingReferencePolicy],
+      inject: [
+        WALLET_REPOSITORY,
+        LEDGER_REPOSITORY,
+        WAGER_TRANSACTION_REPOSITORY,
+        ID_GENERATOR,
+        PendingReferencePolicy,
+        EventRecorder,
+      ],
       useFactory: (
         wallets: WalletRepository,
         ledger: LedgerRepository,
         transactions: WagerTransactionRepository,
         ids: IdGenerator,
         policy: PendingReferencePolicy,
-      ) => new WagerProcessor({ wallets, ledger, transactions, ids, policy }),
+        events: EventRecorder,
+      ) => new WagerProcessor({ wallets, ledger, transactions, ids, policy, events }),
     },
     {
       provide: SubmitWagerTransactionUseCase,
@@ -84,10 +95,10 @@ import { WageringController } from './presentation/wagering.controller';
         }),
     },
     {
-      provide: PendingReferenceScheduler,
+      provide: PENDING_REFERENCE_SCHEDULER,
       inject: [PendingReferenceWorker, CLOCK, APP_CONFIG],
       useFactory: (worker: PendingReferenceWorker, clock: Clock, config: AppConfig) =>
-        new PendingReferenceScheduler(worker, clock, config.databaseUrl),
+        new DeadlineScheduler('pending_reference', worker, clock, config.databaseUrl),
     },
     {
       provide: ProcessWagerMessageUseCase,
@@ -136,7 +147,7 @@ import { WageringController } from './presentation/wagering.controller';
 })
 export class WageringModule implements OnApplicationBootstrap, BeforeApplicationShutdown, OnApplicationShutdown {
   constructor(
-    @Inject(PendingReferenceScheduler) private readonly scheduler: PendingReferenceScheduler,
+    @Inject(PENDING_REFERENCE_SCHEDULER) private readonly scheduler: DeadlineScheduler,
     @Inject(WagerTransactionsConsumer) private readonly consumer: WagerTransactionsConsumer,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}

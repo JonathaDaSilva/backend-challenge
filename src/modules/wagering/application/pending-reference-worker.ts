@@ -1,6 +1,5 @@
 import type { TransactionRunner } from '../../../shared/application/transaction-runner';
 import type { WalletRepository } from '../../wallet/application/ports';
-import { FailureCode } from '../domain/failure-codes';
 import { WagerTransactionStatus } from '../domain/wager-transaction';
 import type { PendingReferencePolicy } from './pending-reference-policy';
 import type { DuePendingReference, WagerTransactionRepository } from './ports';
@@ -55,8 +54,7 @@ export class PendingReferenceWorker {
         await transactions.reschedule(transaction.id, { attempts, nextAttemptAt: policy.nextAttemptAt(now, attempts) });
         return 'rescheduled';
       }
-      transaction.reject(FailureCode.ReferenceNotFound, wallet.balance);
-      await transactions.update(transaction);
+      await processor.expire(transaction, wallet);
       return 'expired';
     }
 

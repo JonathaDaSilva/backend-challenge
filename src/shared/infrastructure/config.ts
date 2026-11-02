@@ -53,6 +53,13 @@ export interface AppConfig {
     readonly maxDelayMs: number;
     readonly batchSize: number;
   };
+  readonly events: {
+    readonly publisherEnabled: boolean;
+    readonly queueName: string;
+    readonly batchSize: number;
+    readonly baseDelayMs: number;
+    readonly maxDelayMs: number;
+  };
   readonly aws: {
     readonly region: string;
     readonly endpoint: string;
@@ -90,6 +97,13 @@ export function loadConfig(): AppConfig {
       baseDelayMs: positiveInt('PENDING_REFERENCE_BASE_DELAY_MS', '1000'),
       maxDelayMs: positiveInt('PENDING_REFERENCE_MAX_DELAY_MS', '60000'),
       batchSize: positiveInt('PENDING_REFERENCE_BATCH_SIZE', '50'),
+    },
+    events: {
+      publisherEnabled: required('EVENTS_PUBLISHER_ENABLED', 'true') !== 'false',
+      queueName: required('EVENTS_QUEUE', 'wallet-events.fifo'),
+      batchSize: positiveInt('EVENTS_BATCH_SIZE', '10'),
+      baseDelayMs: positiveInt('EVENTS_BASE_DELAY_MS', '1000'),
+      maxDelayMs: positiveInt('EVENTS_MAX_DELAY_MS', '300000'),
     },
     aws: {
       region: required('AWS_REGION', 'us-east-1'),

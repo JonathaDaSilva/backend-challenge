@@ -11,6 +11,7 @@ import {
 import { Logger } from '@nestjs/common';
 import { DuplicateMessageError, InvalidPayloadError } from '../../../../shared/application/errors';
 import type { CatalogCode } from '../../../../shared/application/failure-catalog';
+import { runWithCorrelation } from '../../../../shared/infrastructure/async-correlation-context';
 import { classifyError } from '../../../../shared/infrastructure/error-classification';
 import { parseWith } from '../../../../shared/presentation/validation';
 import type { ProcessWagerMessageUseCase, WagerMessage } from '../../application/process-wager-message.use-case';
@@ -124,7 +125,7 @@ export class WagerTransactionsConsumer {
     }
 
     try {
-      await this.processMessage.execute(parsed);
+      await runWithCorrelation(parsed.messageId, () => this.processMessage.execute(parsed));
       return this.ack(message);
     } catch (error) {
       if (error instanceof DuplicateMessageError) return this.ack(message);

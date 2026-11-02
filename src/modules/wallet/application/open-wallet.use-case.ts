@@ -1,7 +1,9 @@
 import type { Clock } from '../../../shared/application/clock';
+import type { EventRecorder } from '../../../shared/application/event-recorder';
 import type { IdGenerator } from '../../../shared/application/id-generator';
 import type { TransactionRunner } from '../../../shared/application/transaction-runner';
 import type { Money } from '../../../shared/domain/money';
+import { WalletBalanceChanged } from '../../wagering/application/events';
 import type { WagerTransactionRepository } from '../../wagering/application/ports';
 import { WagerTransaction } from '../../wagering/domain/wager-transaction';
 import { Wallet } from '../domain/wallet';
@@ -21,6 +23,7 @@ export interface OpenWalletDependencies {
   readonly ids: IdGenerator;
   readonly clock: Clock;
   readonly supportedCurrencies: readonly string[];
+  readonly events: EventRecorder;
 }
 
 export class OpenWalletUseCase {
@@ -66,6 +69,8 @@ export class OpenWalletUseCase {
         }),
       );
       await this.deps.ledger.append(openingEntry);
+      const { events } = this.deps;
+      await events.record([WalletBalanceChanged.from(wallet, openingEntry, events.context(openingEntry.transactionId))]);
     }
 
     return wallet;

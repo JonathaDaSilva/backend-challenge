@@ -6,6 +6,7 @@ import { WalletLedgerEntryRecordSchema } from '../../../modules/wallet/infrastru
 import { WalletRecordSchema } from '../../../modules/wallet/infrastructure/persistence/wallet.record';
 import { loadConfig } from '../config';
 import { InboxMessageRecordSchema } from './inbox.record';
+import { OutboxMessageRecordSchema } from './outbox.record';
 
 export const entities = [
   WalletRecordSchema,
@@ -13,6 +14,7 @@ export const entities = [
   WagerTransactionRecordSchema,
   WagerTransactionReversalRecordSchema,
   InboxMessageRecordSchema,
+  OutboxMessageRecordSchema,
 ];
 
 export function createMikroOrmConfig(databaseUrl = loadConfig().databaseUrl) {

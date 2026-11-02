@@ -1,10 +1,18 @@
+import type { EventRecorder } from '../../../shared/application/event-recorder';
 import type { IdGenerator } from '../../../shared/application/id-generator';
+import type { SerializableEvent } from '../../../shared/domain/outbox-message';
 import type { LedgerRepository, WalletRepository } from '../../wallet/application/ports';
 import { InsufficientFundsError } from '../../wallet/domain/errors';
 import type { Wallet } from '../../wallet/domain/wallet';
 import { LedgerDirection, type WalletLedgerEntry } from '../../wallet/domain/wallet-ledger-entry';
 import { FailureCode } from '../domain/failure-codes';
 import { type WagerTransaction, WagerTransactionStatus } from '../domain/wager-transaction';
+import {
+  WagerTransactionPendingReference,
+  WagerTransactionProcessed,
+  WagerTransactionRejected,
+  WalletBalanceChanged,
+} from './events';
 import type { PendingReferencePolicy } from './pending-reference-policy';
 import type { WagerTransactionRepository } from './ports';
 
@@ -20,6 +28,7 @@ export interface WagerProcessorDependencies {
   readonly transactions: WagerTransactionRepository;
   readonly ids: IdGenerator;
   readonly policy: PendingReferencePolicy;
+  readonly events: EventRecorder;
 }
 
 // Todos os métodos assumem que a wallet já está travada pelo chamador (SELECT … FOR UPDATE).
@@ -76,6 +85,7 @@ export class WagerProcessor {
       : undefined;
     await this.deps.transactions.insert(transaction, schedule);
     await this.persistEffects(transaction, wallet, expectedVersion, decision, at);
+    await this.recordEvents(transaction, wallet, decision, undefined);
   }
 
   async persistResolved(
@@ -84,9 +94,17 @@ export class WagerProcessor {
     expectedVersion: number,
     decision: Decision,
     at: Date,
+    causationId?: string,
   ): Promise<void> {
     await this.deps.transactions.update(transaction);
     await this.persistEffects(transaction, wallet, expectedVersion, decision, at);
+    await this.recordEvents(transaction, wallet, decision, causationId);
+  }
+
+  async expire(transaction: WagerTransaction, wallet: Wallet): Promise<void> {
+    transaction.reject(FailureCode.ReferenceNotFound, wallet.balance);
+    await this.deps.transactions.update(transaction);
+    await this.recordEvents(transaction, wallet, { pending: false }, undefined);
   }
 
   async resolveDependents(reference: WagerTransaction, wallet: Wallet, at: Date): Promise<void> {
@@ -102,7 +120,7 @@ export class WagerProcessor {
       const expectedVersion = wallet.version;
       const decision = await this.decide(dependent, wallet, at);
       if (decision.pending) continue;
-      await this.persistResolved(dependent, wallet, expectedVersion, decision, at);
+      await this.persistResolved(dependent, wallet, expectedVersion, decision, at, reference.id);
       await this.resolveDependents(dependent, wallet, at);
     }
   }
@@ -118,5 +136,24 @@ export class WagerProcessor {
     await this.deps.wallets.saveBalance(wallet, expectedVersion);
     await this.deps.ledger.append(decision.entry);
     if (decision.referenceId) await this.deps.transactions.linkReversal(transaction, decision.referenceId, at);
+  }
+
+  private async recordEvents(
+    transaction: WagerTransaction,
+    wallet: Wallet,
+    decision: Decision,
+    causationId: string | undefined,
+  ): Promise<void> {
+    const { events } = this.deps;
+    const recorded: SerializableEvent[] = [];
+    if (transaction.status === WagerTransactionStatus.Processed) {
+      recorded.push(WagerTransactionProcessed.from(transaction, events.context(causationId)));
+    } else if (transaction.status === WagerTransactionStatus.Rejected) {
+      recorded.push(WagerTransactionRejected.from(transaction, events.context(causationId)));
+    } else if (transaction.status === WagerTransactionStatus.PendingReference) {
+      recorded.push(WagerTransactionPendingReference.from(transaction, events.context(causationId)));
+    }
+    if (decision.entry) recorded.push(WalletBalanceChanged.from(wallet, decision.entry, events.context(transaction.id)));
+    await events.record(recorded);
   }
 }

@@ -7,6 +7,8 @@ import { WalletModule } from './modules/wallet/wallet.module';
 import { createMikroOrmConfig } from './shared/infrastructure/database/mikro-orm.config';
 import { PersistenceModule } from './shared/infrastructure/database/persistence.module';
 import { InfrastructureModule } from './shared/infrastructure/infrastructure.module';
+import { OutboxModule } from './shared/infrastructure/outbox.module';
+import { CorrelationMiddleware } from './shared/presentation/correlation.middleware';
 import { ErrorFilter } from './shared/presentation/error.filter';
 import { JsonContentTypeMiddleware } from './shared/presentation/json-content-type.middleware';
 
@@ -17,6 +19,7 @@ import { JsonContentTypeMiddleware } from './shared/presentation/json-content-ty
       useFactory: () => createMikroOrmConfig(),
     }),
     PersistenceModule,
+    OutboxModule,
     HealthModule,
     WalletModule,
     WageringModule,
@@ -25,6 +28,6 @@ import { JsonContentTypeMiddleware } from './shared/presentation/json-content-ty
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(JsonContentTypeMiddleware).forRoutes('*');
+    consumer.apply(CorrelationMiddleware, JsonContentTypeMiddleware).forRoutes('*');
   }
 }

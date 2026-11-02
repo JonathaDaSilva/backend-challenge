@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CLOCK, type Clock } from '../../shared/application/clock';
+import { EventRecorder } from '../../shared/application/event-recorder';
 import { ID_GENERATOR, type IdGenerator } from '../../shared/application/id-generator';
 import { TRANSACTION_RUNNER, type TransactionRunner } from '../../shared/application/transaction-runner';
 import type { AppConfig } from '../../shared/infrastructure/config';
@@ -15,7 +16,7 @@ import { WalletsController } from './presentation/wallets.controller';
   providers: [
     {
       provide: OpenWalletUseCase,
-      inject: [WALLET_REPOSITORY, LEDGER_REPOSITORY, WAGER_TRANSACTION_REPOSITORY, TRANSACTION_RUNNER, ID_GENERATOR, CLOCK, APP_CONFIG],
+      inject: [WALLET_REPOSITORY, LEDGER_REPOSITORY, WAGER_TRANSACTION_REPOSITORY, TRANSACTION_RUNNER, ID_GENERATOR, CLOCK, APP_CONFIG, EventRecorder],
       useFactory: (
         wallets: WalletRepository,
         ledger: LedgerRepository,
@@ -24,6 +25,7 @@ import { WalletsController } from './presentation/wallets.controller';
         ids: IdGenerator,
         clock: Clock,
         config: AppConfig,
+        events: EventRecorder,
       ) =>
         new OpenWalletUseCase({
           wallets,
@@ -33,6 +35,7 @@ import { WalletsController } from './presentation/wallets.controller';
           ids,
           clock,
           supportedCurrencies: config.supportedCurrencies,
+          events,
         }),
     },
     {

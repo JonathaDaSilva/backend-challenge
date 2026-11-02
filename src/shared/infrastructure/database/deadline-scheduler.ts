@@ -1,14 +1,19 @@
 import { Logger } from '@nestjs/common';
 import { Client } from 'pg';
-import type { Clock } from '../../../shared/application/clock';
-import type { PendingReferenceWorker } from '../application/pending-reference-worker';
+import type { Clock } from '../../application/clock';
+import { runWithCorrelation } from '../async-correlation-context';
 
-const CHANNEL = 'pending_reference';
+export interface DeadlineJob {
+  processDue(now: Date): Promise<unknown>;
+  nextDueAt(): Promise<Date | undefined>;
+}
+
 const MAX_TIMER_MS = 2_147_483_647;
 const RECONNECT_DELAY_MS = 1_000;
 
-export class PendingReferenceScheduler {
-  private readonly logger = new Logger(PendingReferenceScheduler.name);
+// Sem polling: um único timer apontado para o próximo vencimento, adiantado por LISTEN/NOTIFY.
+export class DeadlineScheduler {
+  private readonly logger: Logger;
   private client: Client | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private timerTarget: number | undefined;
@@ -17,10 +22,13 @@ export class PendingReferenceScheduler {
   private stopped = false;
 
   constructor(
-    private readonly worker: PendingReferenceWorker,
+    private readonly channel: string,
+    private readonly job: DeadlineJob,
     private readonly clock: Clock,
     private readonly databaseUrl: string,
-  ) {}
+  ) {
+    this.logger = new Logger(`DeadlineScheduler:${channel}`);
+  }
 
   async start(): Promise<void> {
     this.stopped = false;
@@ -55,11 +63,11 @@ export class PendingReferenceScheduler {
     try {
       do {
         this.rerunRequested = false;
-        await this.worker.processDue(this.clock.now());
+        await runWithCorrelation(Bun.randomUUIDv7(), () => this.job.processDue(this.clock.now()));
       } while (this.rerunRequested && !this.stopped);
       await this.rescheduleFromDatabase();
     } catch (error) {
-      this.logger.error(`pending reference retry failed: ${String(error)}`);
+      this.logger.error(`scheduled run failed: ${String(error)}`);
       this.schedule(this.clock.now().getTime() + RECONNECT_DELAY_MS);
     } finally {
       this.running = false;
@@ -67,7 +75,7 @@ export class PendingReferenceScheduler {
   }
 
   private async rescheduleFromDatabase(): Promise<void> {
-    const dueAt = await this.worker.nextDueAt();
+    const dueAt = await this.job.nextDueAt();
     if (dueAt) this.schedule(dueAt.getTime());
   }
 
@@ -82,7 +90,7 @@ export class PendingReferenceScheduler {
       void this.reconnect(client);
     });
     await client.connect();
-    await client.query(`LISTEN ${CHANNEL}`);
+    await client.query(`LISTEN ${this.channel}`);
     this.client = client;
   }
 
