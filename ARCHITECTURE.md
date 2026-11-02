@@ -15,7 +15,7 @@ Decisões, trade-offs e limitações. Atualizado conforme cada issue do roadmap 
 
 ## Filas
 
-`docker/sqs/init/ready.d/01-create-queues.sh` cria `wager-transactions-dlq.fifo` e depois `wager-transactions.fifo`, com `RedrivePolicy` para a DLQ. O `maxReceiveCount=5` é provisório até a política de retry da #11. O healthcheck do container usa `/_ministack/ready`, que só responde "completed" depois que os scripts terminam, então `docker compose up --wait` retorna com as filas criadas.
+`docker/sqs/init/ready.d/01-create-queues.sh` cria `wager-transactions-dlq.fifo` e depois `wager-transactions.fifo`, com `RedrivePolicy` para a DLQ. O `maxReceiveCount=8` é a rede de segurança do consumer (ver [Consumer SQS](#consumer-sqs-e-inbox)). O healthcheck do container usa `/_ministack/ready`, que só responde "completed" depois que os scripts terminam, então `docker compose up --wait` retorna com as filas criadas.
 
 A FIFO não é tratada como garantia de consistência: a deduplicação e a ordem por carteira são garantidas no banco (inbox, constraints e locks), como pede o desafio.
 
@@ -363,7 +363,7 @@ resolve a referência por (providerId, referenceExternalTransactionId)
 
 `src/shared/application/failure-catalog.ts` declara cada código com categoria, status, `retryable` e descrição:
 - **Filtro HTTP:** o `ErrorFilter` deriva status e corpo do catálogo. Cada classe de erro mapeia para um `CatalogCode`, tipado, então um código fora do catálogo nem compila.
-- **Consumer SQS (#11):** vai usar a mesma categoria para decidir. `BUSINESS_REJECTION`/`CONFLICT` → ack; `TRANSIENT` → retry com backoff; `INTERNAL`/`PERMANENT` → DLQ depois do limite.
+- **Consumer SQS:** decide pela mesma categoria. `BUSINESS_REJECTION`/`CONFLICT`/`NOT_FOUND` → ack; `VALIDATION` → DLQ; `TRANSIENT`/`INTERNAL` → retry com backoff, e FAILED + DLQ depois do limite. A classificação (`src/shared/infrastructure/error-classification.ts`) é a mesma usada pelo filtro HTTP.
 - **Esta documentação:** a tabela abaixo é gerada por `bun run docs:failures`.
 
 Testes (`test/unit/failure-catalog.test.ts`) garantem que:
@@ -404,6 +404,66 @@ Além disso, um teste de contrato (`test/integration/error-contract.test.ts`) pr
 | `PERMANENT_FAILURE` | PERMANENT | 500 | não | Falha permanente de infraestrutura, gravada como FAILED (consumer SQS) |
 <!-- failure-catalog:end -->
 
+## Consumer SQS e inbox
+
+`src/modules/wagering/infrastructure/messaging/wager-transactions.consumer.ts` lê `wager-transactions.fifo` e entrega cada mensagem ao **mesmo** `SubmitWagerTransactionUseCase` do HTTP.
+
+**Consumo:** `ReceiveMessage` com long polling (`WaitTimeSeconds` 20, até 10 mensagens). É o único modo de consumir SQS fora de Lambda: a chamada fica parada no servidor até chegar mensagem, e não há laço de consulta em intervalos. No shutdown, o long poll em curso é abortado por `AbortController`.
+
+```
+mensagem
+ └─ envelope + data validados (o mesmo schema zod do HTTP, wager-transaction.schema.ts)
+      ├─ inválida                 → DLQ imediata (INVALID_PAYLOAD): repetir nunca adianta
+      └─ run:
+           INSERT inbox (consumerName, messageId)    → 23505: já processada → ack
+           SubmitWagerTransactionUseCase              (o run interno junta na mesma transação)
+         commit
+         └─ DeleteMessage (ack) só depois do commit
+```
+
+**Duas barreiras contra efeito duplicado:**
+- **Mesmo `messageId`** (redelivery do SQS, ou consumer morto antes do ack): barrado pela PK da inbox.
+- **`messageId` novo com a mesma `idempotencyKey`** (o provedor reenviou): replay no use case.
+
+O INSERT da inbox vem **antes** do lock da wallet. Duas entregas simultâneas da mesma mensagem ficam em série na unique da inbox, e a segunda faz ack sem tocar na wallet. A inbox usa o `messageId` do envelope (§10), não o id interno do SQS.
+
+**Classificação dos erros** (pelo catálogo de falhas):
+
+| Resultado | Ação |
+|---|---|
+| PROCESSED, REJECTED gravada ou PENDING_REFERENCE | inbox + commit → ack |
+| `BUSINESS_REJECTION` / `CONFLICT` não gravados (ex.: `UNKNOWN_WALLET`, `IDEMPOTENCY_CONFLICT`) | log + ack: repetir dá a mesma resposta |
+| `VALIDATION` | DLQ imediata |
+| `TRANSIENT` / `INTERNAL` | `ChangeMessageVisibility` com backoff; não faz ack |
+| `TRANSIENT` / `INTERNAL` na última tentativa | grava a transação como **FAILED** (`PERMANENT_FAILURE`), depois DLQ |
+
+**Por que 7 tentativas.** O retry precisa atravessar a falha transitória mais longa que vale a pena absorver automaticamente:
+
+| Fonte | Duração típica |
+|---|---|
+| disputa de lock (`lock_timeout` 2 s) | segundos |
+| pool esgotado | segundos |
+| **failover de PostgreSQL gerenciado** (ex.: RDS Multi-AZ, documentado em 60–120 s) | até ~120 s |
+
+Com `min(2 s × 2ⁿ⁻¹, 60 s)`, as esperas acumuladas são 2, 6, 14, 30, 62 e 122 s. **Sete tentativas** são o menor número que cobre um failover de 120 s. Uma oitava estenderia para quase 3 minutos o travamento do grupo FIFO (as mensagens seguintes da mesma wallet esperam) sem cobrir nenhuma falha real a mais. Passado esse ponto, a falha é uma indisponibilidade: a mensagem vai para a DLQ, para alerta e reprocessamento manual. O `maxReceiveCount` da fila é **8**, um acima do limite do consumer. Ele só age se o processo morrer sempre antes de classificar a mensagem (por exemplo, um crash ao ler aquele payload). Configurável em `SQS_MAX_ATTEMPTS`, `SQS_BACKOFF_BASE_MS` e `SQS_BACKOFF_MAX_MS`; um teste unitário fixa a janela em 122 s.
+
+**FAILED auditável.** Ao esgotar as tentativas, `RecordFailedTransactionUseCase` grava a transação como FAILED (`PERMANENT_FAILURE`) com a inbox, para que o provedor, ao consultar ou reenviar a key, veja o desfecho. É melhor esforço: se o banco continua fora (a causa mais comum), o registro também falha. A mensagem vai para a DLQ do mesmo jeito, com `failureCode` e `receiveCount` como atributos.
+
+**Ordem e paralelismo.** Num lote, mensagens do mesmo `MessageGroupId` são processadas em sequência, e grupos diferentes em paralelo. Se uma mensagem do grupo entra em retry, as seguintes do lote voltam para a fila (visibilidade 0), para não passarem à frente dela. Recomenda-se que os produtores usem `MessageGroupId = walletId`: ordem por wallet, o mesmo eixo do lock. Ainda assim, a garantia continua no banco.
+
+**Shutdown (SIGTERM).** O consumer para no `beforeApplicationShutdown`, que roda antes do `onApplicationShutdown`, em que o cliente SQS é destruído:
+1. o long poll é abortado;
+2. as mensagens **em processamento** terminam, dentro de `SQS_SHUTDOWN_GRACE_MS` (padrão 10 s);
+3. as recebidas e **ainda não iniciadas** ganham visibilidade 0 e voltam para a fila na hora, em vez de esperar o visibility timeout.
+
+**Provas** (`test/integration/messaging/`, MiniStack real, filas próprias por teste):
+- caminho feliz com inbox e ack, `messageId` duplicado e key reenviada;
+- rejeição gravada e `UNKNOWN_WALLET`, ambos com ack;
+- mensagens malformadas direto para a DLQ;
+- falha transitória aplicada uma vez depois do backoff, e esgotamento resultando em FAILED + DLQ;
+- shutdown com uma mensagem em voo e duas devolvidas na hora;
+- **um processo `bun` separado morre exatamente no `DeleteMessage`, depois do commit.** Outro consumer recebe a redelivery, a inbox a reconhece e o débito continua sendo um só.
+
 ## Pendente (próximas issues)
 
-Inbox/outbox (#11, #12), autenticação (#17).
+Outbox (#12), autenticação (#17).
