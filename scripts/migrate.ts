@@ -1,11 +1,10 @@
 import { MikroORM } from '@mikro-orm/postgresql';
+import { loadConfig } from '../src/shared/infrastructure/config';
 import { createMikroOrmConfig } from '../src/shared/infrastructure/database/mikro-orm.config';
 
-// Programmatic migrator: avoids depending on the mikro-orm CLI loader under Bun.
-// Usage: bun scripts/migrate.ts up | down [--to <name>|--all] | create <name> | pending
 const [command, ...args] = process.argv.slice(2);
 
-const orm = await MikroORM.init(createMikroOrmConfig());
+const orm = await MikroORM.init(createMikroOrmConfig(loadConfig().migrationDatabaseUrl));
 const migrator = orm.migrator;
 
 try {

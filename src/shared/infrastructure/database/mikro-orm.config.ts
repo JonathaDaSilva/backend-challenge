@@ -1,16 +1,27 @@
 import { defineConfig } from '@mikro-orm/postgresql';
 import { Migrator } from '@mikro-orm/migrations';
+import { WagerTransactionRecordSchema } from '../../../modules/wagering/infrastructure/persistence/wager-transaction.record';
+import { WagerTransactionReversalRecordSchema } from '../../../modules/wagering/infrastructure/persistence/wager-transaction-reversal.record';
+import { WalletLedgerEntryRecordSchema } from '../../../modules/wallet/infrastructure/persistence/wallet-ledger-entry.record';
+import { WalletRecordSchema } from '../../../modules/wallet/infrastructure/persistence/wallet.record';
 import { loadConfig } from '../config';
+import { InboxMessageRecordSchema } from './inbox.record';
+import { OutboxMessageRecordSchema } from './outbox.record';
 
-// Entities are mapped with EntitySchema inside each module's infrastructure layer,
-// keeping domain classes free of ORM decorators (README §6).
-export const entities = [];
+export const entities = [
+  WalletRecordSchema,
+  WalletLedgerEntryRecordSchema,
+  WagerTransactionRecordSchema,
+  WagerTransactionReversalRecordSchema,
+  InboxMessageRecordSchema,
+  OutboxMessageRecordSchema,
+];
 
 export function createMikroOrmConfig(databaseUrl = loadConfig().databaseUrl) {
   return defineConfig({
     clientUrl: databaseUrl,
+    pool: { max: loadConfig().database.poolMax },
     entities,
-    discovery: { warnWhenNoEntities: false },
     extensions: [Migrator],
     preferTs: true,
     migrations: {
@@ -20,8 +31,6 @@ export function createMikroOrmConfig(databaseUrl = loadConfig().databaseUrl) {
       tableName: 'mikro_orm_migrations',
       transactional: true,
       allOrNothing: true,
-      // Schema changes are written by hand: constraints and triggers are part of
-      // the design (README restriction 9), so no snapshot-based diffing.
       snapshot: false,
       emit: 'ts',
     },

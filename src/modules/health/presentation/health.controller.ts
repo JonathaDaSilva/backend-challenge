@@ -2,6 +2,8 @@ import { Controller, Get, HttpCode, Inject, ServiceUnavailableException } from '
 import { MikroORM } from '@mikro-orm/postgresql';
 import { GetQueueUrlCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import type { AppConfig } from '../../../shared/infrastructure/config';
+import { LifecycleState } from '../../../shared/infrastructure/lifecycle-state';
+import { Public } from '../../../shared/presentation/auth/auth.guard';
 import { APP_CONFIG, SQS_CLIENT } from '../../../shared/infrastructure/tokens';
 
 type CheckStatus = 'up' | 'down';
@@ -15,13 +17,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-// Health endpoints are intentionally unauthenticated (README §2).
+@Public()
 @Controller('health')
 export class HealthController {
   constructor(
     private readonly orm: MikroORM,
     @Inject(SQS_CLIENT) private readonly sqs: SQSClient,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(LifecycleState) private readonly lifecycle: LifecycleState,
   ) {}
 
   @Get('live')
@@ -33,6 +36,9 @@ export class HealthController {
   @Get('ready')
   @HttpCode(200)
   async ready(): Promise<{ status: 'ok'; checks: Record<string, CheckStatus> }> {
+    // No SIGTERM a instância sai da rotação antes de parar consumer e workers.
+    if (this.lifecycle.isShuttingDown()) throw new ServiceUnavailableException({ status: 'shutting_down' });
+
     const [postgres, sqs] = await Promise.allSettled([
       withTimeout(this.orm.em.getConnection().execute('select 1'), CHECK_TIMEOUT_MS),
       this.sqs.send(new GetQueueUrlCommand({ QueueName: this.config.sqs.wagerQueue }), {
