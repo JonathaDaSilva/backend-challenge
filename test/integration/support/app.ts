@@ -1,8 +1,9 @@
 import 'reflect-metadata';
-import type { INestApplication } from '@nestjs/common';
+import type { INestApplication, LoggerService } from '@nestjs/common';
 import { Test, type TestingModuleBuilder } from '@nestjs/testing';
 import { AppModule } from '../../../src/app.module';
 import { type AppConfig, loadConfig } from '../../../src/shared/infrastructure/config';
+import { STRUCTURED_LOGGER } from '../../../src/shared/application/observability';
 import { APP_CONFIG } from '../../../src/shared/infrastructure/tokens';
 
 export interface StartedApp {
@@ -13,9 +14,12 @@ export interface StartedApp {
 
 export async function startApp(
   configure: (builder: TestingModuleBuilder) => TestingModuleBuilder = (builder) => builder,
+  options: { logger?: LoggerService } = {},
 ): Promise<StartedApp> {
-  const moduleRef = await configure(Test.createTestingModule({ imports: [AppModule] })).compile();
-  const app: INestApplication = moduleRef.createNestApplication({ logger: false });
+  let builder = configure(Test.createTestingModule({ imports: [AppModule] }));
+  if (options.logger) builder = builder.overrideProvider(STRUCTURED_LOGGER).useValue(options.logger);
+  const moduleRef = await builder.compile();
+  const app: INestApplication = moduleRef.createNestApplication({ logger: options.logger ?? false });
   await app.listen(0);
   const url = await app.getUrl();
   return {
